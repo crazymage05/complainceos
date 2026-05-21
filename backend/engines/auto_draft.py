@@ -1,6 +1,7 @@
 from typing import Dict, Any, Optional
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from datetime import datetime
+from bson import ObjectId
 
 async def generate_draft(
     db: AsyncIOMotorDatabase,
@@ -12,9 +13,21 @@ async def generate_draft(
     Auto-Draft Filing Agent — Patent Claim 5.
     Pre-populates filing documents from business data.
     """
-    business = await db.businesses.find_one({"_id": business_id})
+    try:
+        business = await db.businesses.find_one({"_id": ObjectId(business_id)})
+    except Exception:
+        business = None
+
     template = await db.filing_templates.find_one({"regulation_id": regulation_id})
-    instance = await db.obligation_instances.find_one({"_id": instance_id})
+
+    # Fallback: use generic template if no specific one exists
+    if not template:
+        template = await db.filing_templates.find_one({})
+
+    try:
+        instance = await db.obligation_instances.find_one({"_id": ObjectId(instance_id)})
+    except Exception:
+        instance = None
 
     if not business or not template:
         return {"error": "Business or template not found"}
