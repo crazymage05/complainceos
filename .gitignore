@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+.env
+*.egg-info/
+dist/
+.venv/
+venv/
+
+# Node
+node_modules/
+frontend/dist/
+frontend/.env
+
+# Keys
+gcloud-key.json
+*.json.key
+*.pem
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db

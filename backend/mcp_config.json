@@ -1,0 +1,22 @@
+{
+  "mcpServers": {
+    "mongodb": {
+      "command": "npx",
+      "args": ["-y", "mongodb-mcp-server"],
+      "env": {
+        "MDB_MCP_CONNECTION_STRING": "${MONGODB_URI}"
+      }
+    }
+  },
+  "description": "MongoDB Atlas MCP Server — gives Gemini agent direct read/write access to all 8 ComplianceOS collections",
+  "collections": [
+    "businesses",
+    "regulatory_corpus",
+    "obligation_instances",
+    "regulatory_changes",
+    "penalty_rules",
+    "filing_templates",
+    "filing_history",
+    "agent_decisions"
+  ]
+}
