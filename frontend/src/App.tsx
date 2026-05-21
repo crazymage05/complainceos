@@ -5,6 +5,7 @@ import type { User } from 'firebase/auth'
 import Onboarding from './components/Onboarding'
 import Dashboard from './components/Dashboard'
 import Login from './components/Login'
+import ReviewObligations from './components/ReviewObligations'
 
 function SpinnerFull() {
   return (
@@ -56,6 +57,14 @@ export default function App() {
           element={
             <RequireAuth user={user}>
               <Onboarding />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/review"
+          element={
+            <RequireAuth user={user}>
+              <ReviewObligations />
             </RequireAuth>
           }
         />

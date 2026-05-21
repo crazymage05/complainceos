@@ -35,6 +35,7 @@ const REGISTRATIONS = [
 
 type FormData = Omit<BusinessProfile, 'registrations'> & {
   registrations: string[]
+  incorporation_date: string
 }
 
 const DEFAULT_FORM: FormData = {
@@ -46,6 +47,7 @@ const DEFAULT_FORM: FormData = {
   employee_count: 0,
   annual_turnover_inr: 0,
   registrations: [],
+  incorporation_date: '',
 }
 
 export default function Onboarding() {
@@ -84,7 +86,7 @@ export default function Onboarding() {
       localStorage.setItem('business_id', result.business_id)
       localStorage.setItem('business_dna', JSON.stringify(result.dna))
       localStorage.setItem('business_name', form.business_name)
-      navigate('/dashboard')
+      navigate('/review')
     } catch {
       setError('Failed to create your compliance profile. Please try again.')
       setLoading(false)
@@ -205,6 +207,31 @@ export default function Onboarding() {
                 <option key={i.value} value={i.value}>{i.label}</option>
               ))}
             </select>
+          </div>
+
+          {/* Incorporation Date */}
+          <div>
+            <label className="block text-sm font-semibold text-gray-700 mb-1.5">
+              Business Start Date
+              <span className="text-gray-400 font-normal ml-2">(optional — helps us tailor your obligations)</span>
+            </label>
+            <input
+              type="date"
+              name="incorporation_date"
+              value={form.incorporation_date}
+              onChange={handleChange}
+              max={new Date().toISOString().split('T')[0]}
+              className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-green-400 focus:border-transparent"
+            />
+            {form.incorporation_date && (() => {
+              const months = Math.max(0, Math.floor(
+                (Date.now() - new Date(form.incorporation_date).getTime()) / (1000 * 60 * 60 * 24 * 30)
+              ))
+              const label = months < 3 ? '🌱 Very new business — we\'ll start with essentials only'
+                : months < 12 ? '📈 Growing business — moderate obligation set'
+                : '🏢 Established business — full compliance profile'
+              return <p className="text-xs mt-1.5 text-green-700 font-medium">{label}</p>
+            })()}
           </div>
 
           {/* Employees + Turnover */}

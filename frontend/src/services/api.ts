@@ -110,54 +110,211 @@ export function getScoreTailwind(score: number) {
   return { border: 'border-green-500', text: 'text-green-600', bg: 'bg-green-50', badge: 'bg-green-100 text-green-700' }
 }
 
+// ─── Response Transformers ───────────────────────────────────────────────────
+
+function deadlineFallback(daysFromNow = 30): string {
+  const d = new Date()
+  d.setDate(d.getDate() + daysFromNow)
+  return d.toISOString()
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function transformObligation(raw: any): ObligationInstance {
+  const freqToDays: Record<string, number> = {
+    daily: 1, weekly: 7, monthly: 30, quarterly: 90,
+    half_yearly: 182, annual: 365, one_time: 365,
+  }
+  const daysAllowed = freqToDays[raw.frequency] ?? 30
+  return {
+    instance_id: raw._id ?? raw.instance_id ?? '',
+    obligation_name: raw.name ?? raw.obligation_name ?? '',
+    framework: raw.category ?? raw.framework ?? '',
+    deadline: raw.due_date ?? deadlineFallback(daysAllowed),
+    decay_score: Math.round(raw.decay_score ?? 50),
+    predicted_penalty_inr: raw.max_penalty_inr ?? raw.predicted_penalty_inr ?? 0,
+    status: raw.status ?? 'pending',
+    period: raw.frequency ?? raw.period ?? 'monthly',
+    description: raw.deadline_rule ?? raw.description ?? '',
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function transformFilingHistory(raw: any): FilingHistory {
+  const filedAt = raw.filed_at ?? null
+  const dueDate = raw.due_date ?? null
+
+  let daysLate = 0
+  if (filedAt && dueDate) {
+    const diff = (new Date(filedAt).getTime() - new Date(dueDate).getTime()) / 86400000
+    daysLate = diff > 0 ? Math.ceil(diff) : 0
+  }
+
+  const status: FilingHistory['status'] = raw.on_time === true
+    ? 'on_time'
+    : filedAt ? 'late' : 'pending'
+
+  const snapshotName: string =
+    raw.draft_snapshot?.template_name ??
+    raw.regulation_id ??
+    'Filing'
+
+  return {
+    filing_id: raw._id ?? '',
+    obligation_name: snapshotName,
+    period: filedAt
+      ? new Date(filedAt).toLocaleDateString('en-IN', { month: 'short', year: 'numeric' })
+      : '—',
+    filed_date: filedAt ?? null,
+    deadline: dueDate ?? deadlineFallback(0),
+    days_late: daysLate,
+    penalty_paid_inr: 0,
+    status,
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function transformDraft(raw: any): DraftDocument {
+  const fields = raw.populated_fields ?? raw.pre_filled_fields ?? {}
+  return {
+    instance_id: raw.instance_id ?? '',
+    obligation_name: raw.template_name ?? raw.obligation_name ?? 'Document',
+    period: new Date().toLocaleDateString('en-IN', { month: 'short', year: 'numeric' }),
+    pre_filled_fields: fields,
+    fields_count: Object.keys(fields).length,
+    document_type: raw.output_format ?? raw.document_type ?? 'pdf',
+    status: raw.status ?? 'pending_review',
+    generated_at: raw.generated_at ?? new Date().toISOString(),
+  }
+}
+
 // ─── API Functions ───────────────────────────────────────────────────────────
 
 export async function createBusiness(
-  data: BusinessProfile
+  data: BusinessProfile & { incorporation_date?: string }
 ): Promise<{ business_id: string; dna: DNASummary }> {
-  const res = await api.post('/api/business/onboard', data)
-  return res.data
+  const res = await api.post('/business', {
+    name: data.business_name,
+    owner: data.owner_name,
+    state: data.state,
+    industry: data.industry,
+    employee_count: data.employee_count,
+    annual_turnover_inr: data.annual_turnover_inr,
+    registrations: data.registrations,
+    incorporation_date: data.incorporation_date || null,
+  })
+  const raw = res.data
+  return {
+    business_id: raw.business_id,
+    dna: {
+      total_obligations: raw.dna_summary?.total_obligations ?? 0,
+      high_priority: raw.dna_summary?.high_severity_count ?? 0,
+      frameworks: [],
+      risk_score: 0,
+      created_at: new Date().toISOString(),
+    },
+  }
 }
 
 export async function getObligations(
   businessId: string
 ): Promise<ObligationInstance[]> {
-  const res = await api.get(`/api/business/${businessId}/obligations`)
-  return res.data
+  const res = await api.get(`/obligations/${businessId}`)
+  const raw = res.data
+  const obligations = Array.isArray(raw) ? raw : (raw.obligations ?? [])
+  return obligations.map(transformObligation)
 }
 
 export async function checkRipple(
   businessId: string,
   change: RegChange
 ): Promise<RippleReport> {
-  const res = await api.post(`/api/business/${businessId}/ripple`, change)
-  return res.data
+  const res = await api.post('/regulations/check-ripple', {
+    business_id: businessId,
+    regulation_change: {
+      title: change.description,
+      affected_categories: [change.regulation_id],
+      affected_registrations: [],
+      severity: 'medium',
+      effective_date: change.effective_date,
+    },
+  })
+  const raw = res.data.ripple_report ?? {}
+  const directImpacts: RippleImpact[] = (raw.directly_impacted ?? []).map(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (o: any): RippleImpact => ({
+      obligation_id: o._id ?? o.instance_id ?? '',
+      obligation_name: o.name ?? '',
+      impact_type: 'direct',
+      description: `${o.category} obligation affected`,
+    })
+  )
+  const indirectImpacts: RippleImpact[] = (raw.indirectly_impacted ?? []).map(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (o: any): RippleImpact => ({
+      obligation_id: o._id ?? o.instance_id ?? '',
+      obligation_name: o.name ?? '',
+      impact_type: 'indirect',
+      description: `Dependency chain from ${o.category}`,
+    })
+  )
+  return {
+    change_title: change.description,
+    effective_date: change.effective_date,
+    direct_impacts: directImpacts,
+    indirect_impacts: indirectImpacts,
+    total_affected: raw.total_impacted ?? 0,
+    severity: raw.severity ?? 'medium',
+  }
 }
 
 export async function getPenaltyPreview(
   instanceId: string
 ): Promise<PenaltyPreview> {
-  const res = await api.get(`/api/obligations/${instanceId}/penalty-preview`)
-  return res.data
+  const res = await api.get(`/penalty-preview/${instanceId}`)
+  const raw = res.data
+  return {
+    instance_id: raw.instance_id,
+    obligation_name: raw.name ?? '',
+    base_penalty_inr: raw.base_penalty_inr ?? 0,
+    per_day_penalty_inr: raw.per_day_late_inr ?? 0,
+    estimated_days_late: raw.projected_days_late ?? 0,
+    total_estimated_penalty_inr: raw.predicted_penalty_inr ?? 0,
+    is_first_offense: (raw.times_missed_before ?? 0) === 0,
+    penalty_breakdown: `Base ₹${raw.base_penalty_inr ?? 0} + ₹${raw.per_day_late_inr ?? 0}/day`,
+  }
 }
 
 export async function generateDraft(
   instanceId: string
 ): Promise<DraftDocument> {
-  const res = await api.post(`/api/obligations/${instanceId}/draft`)
-  return res.data
+  const res = await api.post(`/draft/${instanceId}`)
+  return transformDraft(res.data)
 }
 
 export async function approveDraft(
   instanceId: string
 ): Promise<{ status: string }> {
-  const res = await api.post(`/api/obligations/${instanceId}/approve`)
+  const res = await api.post(`/approve-draft/${instanceId}`, {})
+  return { status: res.data.status ?? 'filed' }
+}
+
+export async function confirmObligations(
+  businessId: string,
+  keepIds: string[],
+  dueDates: Record<string, string>
+): Promise<{ kept: number; removed: number }> {
+  const res = await api.post(`/business/${businessId}/confirm-obligations`, {
+    keep_ids: keepIds,
+    due_dates: dueDates,
+  })
   return res.data
 }
 
 export async function getFilingHistory(
   businessId: string
 ): Promise<FilingHistory[]> {
-  const res = await api.get(`/api/business/${businessId}/history`)
-  return res.data
+  const res = await api.get(`/filing-history/${businessId}`)
+  const raw = res.data
+  const history = Array.isArray(raw) ? raw : (raw.history ?? [])
+  return history.map(transformFilingHistory)
 }

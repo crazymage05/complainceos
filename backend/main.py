@@ -1,6 +1,6 @@
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Any, Dict, List, Optional
 
 from bson import ObjectId
@@ -114,7 +114,7 @@ class BusinessCreate(BaseModel):
     employee_count: int
     annual_turnover_inr: float
     registrations: List[str] = Field(default_factory=list)
-    incorporation_date: Optional[str] = None
+    incorporation_date: Optional[str] = None  # ISO date string e.g. "2024-03-15"
 
 
 class RippleCheckRequest(BaseModel):
@@ -124,6 +124,11 @@ class RippleCheckRequest(BaseModel):
 
 class ApproveDraftRequest(BaseModel):
     notes: Optional[str] = None
+
+
+class ConfirmObligationsRequest(BaseModel):
+    keep_ids: List[str]
+    due_dates: Dict[str, str] = Field(default_factory=dict)  # instance_id -> ISO date string
 
 
 # ---------------------------------------------------------------------------
@@ -158,18 +163,34 @@ async def create_business(
         "employee_count": payload.employee_count,
         "annual_turnover_inr": payload.annual_turnover_inr,
         "registrations": payload.registrations,
+        "incorporation_date": payload.incorporation_date,
     }
     dna = await build_compliance_dna(db, business_id, entity_attrs)
 
+    # Frequency → days until next due date (staggered so scores spread naturally)
+    _freq_days = {
+        "daily": 1, "weekly": 7, "monthly": 30, "quarterly": 90,
+        "half_yearly": 182, "annual": 365, "one_time": 365,
+    }
+
     # Create obligation instances from DNA
     inserted_instance_ids = []
-    for obl in dna["applicable_obligations"]:
+    now = datetime.utcnow()
+    for i, obl in enumerate(dna["applicable_obligations"]):
+        freq = obl.get("frequency", "monthly")
+        days_allowed = _freq_days.get(freq, 30)
+        # Stagger due dates: spread obligations across 10–100% of their period
+        # so the dashboard shows a realistic mix of urgent/warning/on-track
+        stagger_pct = 0.15 + (i % 7) * 0.12   # cycles through 15%, 27%, 39%, 51%, 63%, 75%, 87%
+        days_until_due = max(1, int(days_allowed * stagger_pct))
+        due_date = now + timedelta(days=days_until_due)
+
         instance_doc = {
             "business_id": business_id,
             "regulation_id": obl["obligation_id"],
             "name": obl["name"],
             "category": obl["category"],
-            "frequency": obl["frequency"],
+            "frequency": freq,
             "deadline_rule": obl["deadline_rule"],
             "penalty_type": obl["penalty_type"],
             "max_penalty_inr": obl["max_penalty_inr"],
@@ -178,8 +199,8 @@ async def create_business(
             "imprisonment_risk": obl["imprisonment_risk"],
             "status": "pending",
             "decay_score": None,
-            "due_date": None,
-            "created_at": datetime.utcnow(),
+            "due_date": due_date,
+            "created_at": now,
         }
         ins_result = await db.obligation_instances.insert_one(instance_doc)
         inserted_instance_ids.append(str(ins_result.inserted_id))
@@ -203,6 +224,59 @@ async def create_business(
             "high_severity_count": dna["high_severity_count"],
             "obligation_ids": inserted_instance_ids,
         },
+    }
+
+
+# POST /business/{business_id}/confirm-obligations
+@app.post("/business/{business_id}/confirm-obligations")
+async def confirm_obligations(
+    business_id: str,
+    payload: ConfirmObligationsRequest,
+    db: AsyncIOMotorDatabase = Depends(db_dep),
+):
+    """
+    User reviews AI-generated obligations and confirms their actual set.
+    Deletes unchecked obligations and updates due dates on confirmed ones.
+    """
+    try:
+        ObjectId(business_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid business_id")
+
+    keep_set = set(payload.keep_ids)
+
+    # Delete obligations the user removed
+    all_ids = []
+    async for inst in db.obligation_instances.find({"business_id": business_id}, {"_id": 1}):
+        all_ids.append(str(inst["_id"]))
+
+    remove_ids = [oid for oid in all_ids if oid not in keep_set]
+    if remove_ids:
+        await db.obligation_instances.delete_many({
+            "_id": {"$in": [ObjectId(oid) for oid in remove_ids]}
+        })
+
+    # Update due dates for confirmed obligations
+    for instance_id, due_date_str in payload.due_dates.items():
+        if instance_id in keep_set:
+            try:
+                due_dt = datetime.fromisoformat(due_date_str)
+                await db.obligation_instances.update_one(
+                    {"_id": ObjectId(instance_id)},
+                    {"$set": {"due_date": due_dt}},
+                )
+            except Exception:
+                pass
+
+    await _log_decision(db, business_id, "confirm_obligations", {
+        "kept": len(keep_set),
+        "removed": len(remove_ids),
+    })
+
+    return {
+        "business_id": business_id,
+        "kept": len(keep_set),
+        "removed": len(remove_ids),
     }
 
 
