@@ -356,6 +356,18 @@ async def get_obligations(
             {"$set": {"decay_score": decay, "urgency": urgency}},
         )
 
+        # Write time series snapshot (fire-and-forget; non-blocking on failure)
+        try:
+            await db.decay_score_snapshots.insert_one({
+                "instance_id": str(inst["_id"]),
+                "business_id": business_id,
+                "decay_score": decay,
+                "urgency": urgency,
+                "timestamp": now,
+            })
+        except Exception:
+            pass
+
         serialised = _serialize(inst)
         serialised["decay_score"] = decay
         serialised["urgency"] = urgency
@@ -402,6 +414,7 @@ async def check_ripple(
         business_id=business_id,
         affected_categories=affected_categories,
         affected_registrations=affected_registrations,
+        change_description=change.get("title", ""),
     )
 
     await _log_decision(
@@ -687,6 +700,35 @@ async def filing_history(
         "on_time_rate": on_time_rate,
         "history": history,
     }
+
+
+# GET /decay-trend/{business_id}
+@app.get("/decay-trend/{business_id}")
+async def decay_trend(
+    business_id: str,
+    db: AsyncIOMotorDatabase = Depends(db_dep),
+):
+    """
+    Return 30-day decay score history per obligation (from Time Series collection).
+    Used to render sparkline trend lines on the dashboard.
+    """
+    thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+    trends: Dict[str, List] = {}
+    cursor = db.decay_score_snapshots.find(
+        {"business_id": business_id, "timestamp": {"$gte": thirty_days_ago}},
+        sort=[("timestamp", 1)],
+    )
+    async for snap in cursor:
+        iid = snap.get("instance_id", "")
+        if iid not in trends:
+            trends[iid] = []
+        ts = snap.get("timestamp")
+        trends[iid].append({
+            "t": ts.isoformat() if isinstance(ts, datetime) else str(ts),
+            "score": snap.get("decay_score", 0),
+        })
+
+    return {"business_id": business_id, "trends": trends}
 
 
 # GET /agent-decisions/{business_id}

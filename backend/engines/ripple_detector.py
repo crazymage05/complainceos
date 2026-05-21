@@ -1,41 +1,99 @@
-from typing import List, Dict, Any
+import asyncio
+from typing import Any, Dict, List
+
 from motor.motor_asyncio import AsyncIOMotorDatabase
+
 
 async def detect_ripple(
     db: AsyncIOMotorDatabase,
     business_id: str,
     affected_categories: List[str],
     affected_registrations: List[str],
+    change_description: str = "",
 ) -> Dict[str, Any]:
     """
     Regulatory Ripple Detection — Patent Claim 2.
-    Traverses dependency graph to find all impacted obligations.
+    Uses Atlas Vector Search for semantic similarity when change_description
+    is provided; falls back to category matching otherwise.
     """
-    # Step 1: Find directly matched obligations for this business
-    direct_matches = []
-    cursor = db.obligation_instances.find({
-        "business_id": business_id,
-        "status": {"$in": ["pending", "filed"]}
-    })
-    instance_ids = []
-    reg_ids = []
-    async for inst in cursor:
-        instance_ids.append(str(inst["_id"]))
-        reg_ids.append(inst["regulation_id"])
+    direct_matches: List[Dict] = []
+    indirect_matches: List[Dict] = []
+    detection_method = "category_match"
 
-    # Step 2: Check which regulations match affected categories
-    matched_reg_ids = []
-    async for reg in db.regulatory_corpus.find({"_id": {"$in": reg_ids}}):
-        if reg.get("category") in affected_categories:
-            matched_reg_ids.append(reg["_id"])
-            direct_matches.append(reg["_id"])
+    if change_description:
+        try:
+            from model_client import get_embedding
+            embedding = await asyncio.to_thread(get_embedding, change_description)
+            pipeline = [
+                {
+                    "$vectorSearch": {
+                        "index": "regulation_embedding_index",
+                        "path": "embedding",
+                        "queryVector": embedding,
+                        "numCandidates": 60,
+                        "limit": 25,
+                    }
+                },
+                {
+                    "$project": {
+                        "_id": 1,
+                        "name": 1,
+                        "category": 1,
+                        "score": {"$meta": "vectorSearchScore"},
+                    }
+                },
+            ]
+            async for reg in db.regulatory_corpus.aggregate(pipeline):
+                score = reg.get("score", 0)
+                entry = {
+                    "_id": str(reg["_id"]),
+                    "name": reg.get("name", ""),
+                    "category": reg.get("category", ""),
+                    "similarity_score": round(score, 3),
+                }
+                if score >= 0.80:
+                    direct_matches.append(entry)
+                elif score >= 0.60:
+                    indirect_matches.append(entry)
+            detection_method = "vector_search"
+        except Exception:
+            # Atlas Vector Search index not yet configured — fall back gracefully
+            direct_matches = await _category_fallback(db, business_id, affected_categories)
+
+    else:
+        direct_matches = await _category_fallback(db, business_id, affected_categories)
 
     # TODO: PATENT-PENDING — full dependency graph traversal logic omitted
-    # Stub: return direct matches only
-    indirect_matches = []
 
     return {
-        "direct_impacts": direct_matches,
-        "indirect_impacts": indirect_matches,
-        "total_affected_obligations": len(direct_matches) + len(indirect_matches)
+        "directly_impacted": direct_matches,
+        "indirectly_impacted": indirect_matches,
+        "total_impacted": len(direct_matches) + len(indirect_matches),
+        "detection_method": detection_method,
+        "severity": _compute_severity(direct_matches, indirect_matches),
     }
+
+
+async def _category_fallback(
+    db: AsyncIOMotorDatabase,
+    business_id: str,
+    affected_categories: List[str],
+) -> List[Dict]:
+    matches: List[Dict] = []
+    async for inst in db.obligation_instances.find({"business_id": business_id}):
+        if inst.get("category") in affected_categories:
+            matches.append({
+                "_id": str(inst["_id"]),
+                "name": inst.get("name", ""),
+                "category": inst.get("category", ""),
+            })
+    return matches
+
+
+def _compute_severity(direct: List, indirect: List) -> str:
+    total = len(direct) + len(indirect)
+    if total >= 10 or len(direct) >= 5:
+        return "high"
+    if total >= 4 or len(direct) >= 2:
+        return "medium"
+    return "low"

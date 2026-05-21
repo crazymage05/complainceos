@@ -74,6 +74,14 @@ export interface PenaltyPreview {
   penalty_breakdown: string
 }
 
+export interface AdvisorNotes {
+  documents_required: string[]
+  common_mistakes: string[]
+  risk_level: 'low' | 'medium' | 'high'
+  risk_reason: string
+  filing_checklist: string[]
+}
+
 export interface DraftDocument {
   instance_id: string
   obligation_name: string
@@ -83,6 +91,7 @@ export interface DraftDocument {
   document_type: string
   status: 'pending_review' | 'approved' | 'filed'
   generated_at: string
+  advisor_notes?: AdvisorNotes
 }
 
 export interface FilingHistory {
@@ -184,6 +193,7 @@ function transformDraft(raw: any): DraftDocument {
     document_type: raw.output_format ?? raw.document_type ?? 'pdf',
     status: raw.status ?? 'pending_review',
     generated_at: raw.generated_at ?? new Date().toISOString(),
+    advisor_notes: raw.advisor_notes ?? undefined,
   }
 }
 
