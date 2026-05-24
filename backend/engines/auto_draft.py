@@ -160,7 +160,10 @@ async def generate_draft(
     if not template:
         template = await db.filing_templates.find_one({})
 
-    regulation = await db.regulatory_corpus.find_one({"_id": regulation_id})
+    try:
+        regulation = await db.regulatory_corpus.find_one({"_id": ObjectId(regulation_id)})
+    except Exception:
+        regulation = None
 
     if not business or not template:
         return {"error": "Business or template not found"}

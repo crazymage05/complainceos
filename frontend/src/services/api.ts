@@ -105,6 +105,51 @@ export interface FilingHistory {
   status: 'on_time' | 'late' | 'pending'
 }
 
+export interface ChatMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+export interface DiscoveredObligation {
+  name: string
+  reason: string
+  category: string
+  urgency: 'immediate' | 'next_30_days' | 'annual'
+}
+
+export interface ChatDiscoverResponse {
+  reply: string
+  discovered: DiscoveredObligation[]
+  suggestions: string[]
+  business_facts: Record<string, unknown>
+}
+
+export interface ChatDiscovery {
+  _id: string
+  business_id: string
+  obligation_name: string
+  reason: string
+  category: string
+  urgency: 'immediate' | 'next_30_days' | 'annual'
+  discovered_at: string
+}
+
+export interface CircularKeyChange {
+  change: string
+  effective_date: string
+  action_required: string
+}
+
+export interface CircularInterpretResponse {
+  plain_summary: string
+  affected_business_types: string[]
+  key_changes: CircularKeyChange[]
+  applies_to_this_business: boolean
+  reason: string
+  urgency: 'high' | 'medium' | 'low'
+  affected_categories: string[]
+}
+
 // ─── Score Color Utility ─────────────────────────────────────────────────────
 
 export function getScoreColor(score: number): 'red' | 'amber' | 'green' {
@@ -328,6 +373,39 @@ export async function confirmObligations(
   const res = await api.post(`/business/${businessId}/confirm-obligations`, {
     keep_ids: keepIds,
     due_dates: dueDates,
+  })
+  return res.data
+}
+
+export async function chatDiscover(
+  businessId: string,
+  messages: ChatMessage[],
+  businessFacts: Record<string, unknown> = {},
+  summarise = false,
+): Promise<ChatDiscoverResponse> {
+  const res = await api.post('/chat/discover', {
+    business_id: businessId,
+    messages,
+    business_facts: businessFacts,
+    summarise,
+  })
+  return res.data
+}
+
+export async function getChatDiscoveries(businessId: string): Promise<ChatDiscovery[]> {
+  const res = await api.get(`/chat-discoveries/${businessId}`)
+  return res.data.discoveries ?? []
+}
+
+export async function interpretCircular(
+  businessId: string,
+  circularText: string,
+  circularSource: string,
+): Promise<CircularInterpretResponse> {
+  const res = await api.post('/circular/interpret', {
+    business_id: businessId,
+    circular_text: circularText,
+    circular_source: circularSource,
   })
   return res.data
 }

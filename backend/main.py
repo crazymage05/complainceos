@@ -14,8 +14,10 @@ load_dotenv()
 
 from db.mongodb import create_indexes, get_db
 from engines.auto_draft import generate_draft
+from engines.circular_interpreter import interpret_circular
 from engines.decay_score import compute_decay_score, score_to_urgency
 from engines.dna_builder import build_compliance_dna
+from engines.obligation_chat import chat_discover
 from engines.penalty_predictor import predict_penalty
 from engines.ripple_detector import detect_ripple
 
@@ -129,6 +131,19 @@ class ApproveDraftRequest(BaseModel):
 class ConfirmObligationsRequest(BaseModel):
     keep_ids: List[str]
     due_dates: Dict[str, str] = Field(default_factory=dict)  # instance_id -> ISO date string
+
+
+class ChatDiscoverRequest(BaseModel):
+    business_id: str
+    messages: List[Dict[str, str]]
+    business_facts: Dict[str, Any] = Field(default_factory=dict)
+    summarise: bool = False
+
+
+class CircularInterpretRequest(BaseModel):
+    business_id: str
+    circular_text: str
+    circular_source: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -728,6 +743,113 @@ async def decay_trend(
         })
 
     return {"business_id": business_id, "trends": trends}
+
+
+# POST /chat/discover
+@app.post("/chat/discover")
+async def chat_discover_endpoint(
+    payload: ChatDiscoverRequest,
+    db: AsyncIOMotorDatabase = Depends(db_dep),
+):
+    """
+    Obligation Discovery Chat — Patent Claim extension.
+    Gemini conducts a conversational interview to uncover non-obvious obligations.
+    """
+    try:
+        business = await db.businesses.find_one({"_id": ObjectId(payload.business_id)})
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid business_id")
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    context = {
+        "name": business.get("name", ""),
+        "industry": business.get("industry", ""),
+        "state": business.get("state", ""),
+        "employee_count": business.get("employee_count", 0),
+        "annual_turnover_inr": business.get("annual_turnover_inr", 0),
+        "registrations": business.get("registrations", []),
+    }
+
+    result = await chat_discover(
+        db,
+        payload.business_id,
+        payload.messages,
+        context,
+        business_facts=payload.business_facts,
+        summarise=payload.summarise,
+    )
+
+    # Persist each newly discovered obligation to MongoDB
+    for disc in result.get("discovered", []):
+        await db.chat_discoveries.insert_one({
+            "business_id": payload.business_id,
+            "obligation_name": disc.get("name", ""),
+            "reason": disc.get("reason", ""),
+            "category": disc.get("category", ""),
+            "urgency": disc.get("urgency", "annual"),
+            "discovered_at": datetime.utcnow(),
+        })
+
+    await _log_decision(db, payload.business_id, "chat_discover", {
+        "message_count": len(payload.messages),
+        "obligations_discovered": len(result.get("discovered", [])),
+        "summarise": payload.summarise,
+    })
+
+    return result
+
+
+# GET /chat-discoveries/{business_id}
+@app.get("/chat-discoveries/{business_id}")
+async def get_chat_discoveries(
+    business_id: str,
+    db: AsyncIOMotorDatabase = Depends(db_dep),
+):
+    """Return all obligations discovered via AI Advisor chat for this business."""
+    discoveries = []
+    async for doc in db.chat_discoveries.find(
+        {"business_id": business_id},
+        sort=[("discovered_at", -1)],
+    ):
+        discoveries.append(_serialize(doc))
+    return {"business_id": business_id, "discoveries": discoveries}
+
+
+# POST /circular/interpret
+@app.post("/circular/interpret")
+async def circular_interpret_endpoint(
+    payload: CircularInterpretRequest,
+    db: AsyncIOMotorDatabase = Depends(db_dep),
+):
+    """
+    Circular Interpretation — Gemini reads raw government circular text
+    and produces plain-language analysis personalised to the business.
+    """
+    context: Dict[str, Any] = {}
+    try:
+        business = await db.businesses.find_one({"_id": ObjectId(payload.business_id)})
+        if business:
+            context = {
+                "name": business.get("name", ""),
+                "industry": business.get("industry", ""),
+                "state": business.get("state", ""),
+                "employee_count": business.get("employee_count", 0),
+                "annual_turnover_inr": business.get("annual_turnover_inr", 0),
+                "registrations": business.get("registrations", []),
+            }
+    except Exception:
+        pass
+
+    result = await interpret_circular(context, payload.circular_text, payload.circular_source)
+
+    await _log_decision(db, payload.business_id, "circular_interpret", {
+        "source": payload.circular_source,
+        "applies": result.get("applies_to_this_business", False),
+        "urgency": result.get("urgency", ""),
+    })
+
+    return result
 
 
 # GET /agent-decisions/{business_id}

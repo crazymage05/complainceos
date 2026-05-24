@@ -5,6 +5,7 @@ import {
   getObligations,
   getFilingHistory,
   generateDraft,
+  checkRipple,
   type ObligationInstance,
   type FilingHistory as FilingHistoryType,
   type DraftDocument,
@@ -14,13 +15,14 @@ import DecayScoreCard from './DecayScoreCard'
 import RippleAlertCard from './RippleAlertCard'
 import AutoDraftQueue from './AutoDraftQueue'
 import FilingHistoryComp from './FilingHistory'
+import AIAdvisorTab from './AIAdvisorTab'
 import clsx from 'clsx'
 
 interface DashboardProps {
   user: User
 }
 
-type Tab = 'overview' | 'obligations' | 'ripple' | 'documents' | 'history'
+type Tab = 'overview' | 'obligations' | 'ripple' | 'documents' | 'history' | 'advisor'
 
 function SkeletonCard() {
   return (
@@ -44,52 +46,14 @@ function SummaryCard({
   )
 }
 
-// Mock ripple alerts — replace with real API when available
-const MOCK_RIPPLE: RippleReport[] = [
-  {
-    change_title: 'GST Annual Return (GSTR-9) — Threshold for Audit Reconciliation Revised',
-    effective_date: '2025-04-01',
-    direct_impacts: [
-      {
-        obligation_id: '1',
-        obligation_name: 'GSTR-9 Annual Return',
-        impact_type: 'direct',
-        description: 'New turnover threshold of ₹2Cr now applies',
-      },
-    ],
-    indirect_impacts: [
-      {
-        obligation_id: '2',
-        obligation_name: 'GSTR-1 Monthly Return',
-        impact_type: 'indirect',
-        description: 'Reconciliation with GSTR-9 may be affected',
-      },
-    ],
-    total_affected: 2,
-    severity: 'high',
-  },
-  {
-    change_title: 'EPF Wage Ceiling Enhanced — EPFO Circular 2025',
-    effective_date: '2025-06-01',
-    direct_impacts: [
-      {
-        obligation_id: '3',
-        obligation_name: 'EPF Monthly Contribution',
-        impact_type: 'direct',
-        description: 'New wage ceiling increases monthly contribution amount',
-      },
-    ],
-    indirect_impacts: [],
-    total_affected: 1,
-    severity: 'medium',
-  },
-]
 
 export default function Dashboard({ user }: DashboardProps) {
   const [activeTab, setActiveTab] = useState<Tab>('overview')
   const [obligations, setObligations] = useState<ObligationInstance[]>([])
   const [history, setHistory] = useState<FilingHistoryType[]>([])
   const [drafts, setDrafts] = useState<DraftDocument[]>([])
+  const [rippleAlerts, setRippleAlerts] = useState<RippleReport[]>([])
+  const [rippleLoading, setRippleLoading] = useState(false)
   const [loading, setLoading] = useState(true)
   const [generatingDraft, setGeneratingDraft] = useState<string | null>(null)
 
@@ -137,6 +101,25 @@ export default function Dashboard({ user }: DashboardProps) {
     setDrafts((prev) => prev.filter((d) => d.instance_id !== instanceId))
   }
 
+  async function handleRippleCheck(description: string, effectiveDate: string) {
+    if (!businessId) return
+    setRippleLoading(true)
+    try {
+      const report = await checkRipple(businessId, {
+        regulation_id: `custom-${Date.now()}`,
+        change_type: 'amendment',
+        description,
+        effective_date: effectiveDate,
+      })
+      setRippleAlerts((prev) => [report, ...prev])
+      setActiveTab('ripple')
+    } catch {
+      // silently fail — user stays on current tab
+    } finally {
+      setRippleLoading(false)
+    }
+  }
+
   // Derived stats
   const highSeverity = obligations.filter((o) => o.decay_score < 20).length
   const dueThisWeek = obligations.filter((o) => {
@@ -152,9 +135,10 @@ export default function Dashboard({ user }: DashboardProps) {
   const tabs: { id: Tab; label: string; count?: number }[] = [
     { id: 'overview', label: 'Overview' },
     { id: 'obligations', label: 'Obligations', count: obligations.length },
-    { id: 'ripple', label: 'Ripple Alerts', count: MOCK_RIPPLE.length },
+    { id: 'ripple', label: 'Ripple Alerts', count: rippleAlerts.length || undefined },
     { id: 'documents', label: 'Documents', count: drafts.length || undefined },
     { id: 'history', label: 'History' },
+    { id: 'advisor', label: 'AI Advisor' },
   ]
 
   return (
@@ -274,10 +258,12 @@ export default function Dashboard({ user }: DashboardProps) {
           {activeTab === 'overview' && (
             <OverviewTab
               obligations={obligations}
-              rippleAlerts={MOCK_RIPPLE}
+              rippleAlerts={rippleAlerts}
               loading={loading}
               onDraftClick={handleDraftClick}
               generatingDraft={generatingDraft}
+              onRippleCheck={handleRippleCheck}
+              rippleLoading={rippleLoading}
             />
           )}
           {activeTab === 'obligations' && (
@@ -289,12 +275,11 @@ export default function Dashboard({ user }: DashboardProps) {
             />
           )}
           {activeTab === 'ripple' && (
-            <div className="space-y-4">
-              <h3 className="font-semibold text-gray-800">Regulatory Change Alerts</h3>
-              {MOCK_RIPPLE.map((r, i) => (
-                <RippleAlertCard key={i} {...r} />
-              ))}
-            </div>
+            <RippleTab
+              alerts={rippleAlerts}
+              onCheck={handleRippleCheck}
+              loading={rippleLoading}
+            />
           )}
           {activeTab === 'documents' && (
             <div>
@@ -311,6 +296,9 @@ export default function Dashboard({ user }: DashboardProps) {
           )}
           {activeTab === 'history' && (
             <FilingHistoryComp history={history} />
+          )}
+          {activeTab === 'advisor' && (
+            <AIAdvisorTab businessId={businessId} businessName={businessName} onGoToObligations={() => setActiveTab('obligations')} />
           )}
         </div>
       </main>
@@ -334,12 +322,16 @@ function OverviewTab({
   loading,
   onDraftClick,
   generatingDraft: _generatingDraft,
+  onRippleCheck,
+  rippleLoading,
 }: {
   obligations: ObligationInstance[]
   rippleAlerts: RippleReport[]
   loading: boolean
   onDraftClick: (id: string) => void
   generatingDraft: string | null
+  onRippleCheck: (description: string, effectiveDate: string) => void
+  rippleLoading: boolean
 }) {
   const urgent = obligations.filter((o) => o.decay_score < 20).slice(0, 3)
   const warning = obligations.filter((o) => o.decay_score >= 20 && o.decay_score <= 40).slice(0, 3)
@@ -378,12 +370,18 @@ function OverviewTab({
         )}
       </div>
 
-      {/* Right: ripple alerts */}
+      {/* Right: ripple check + recent alerts */}
       <div className="space-y-4">
-        <h3 className="font-semibold text-gray-800">Recent Ripple Alerts</h3>
-        {rippleAlerts.slice(0, 2).map((r, i) => (
-          <RippleAlertCard key={i} {...r} />
-        ))}
+        <h3 className="font-semibold text-gray-800">Check Regulation Change</h3>
+        <QuickRippleForm onCheck={onRippleCheck} loading={rippleLoading} compact />
+        {rippleAlerts.length > 0 && (
+          <>
+            <h3 className="font-semibold text-gray-800 pt-2">Recent Ripple Alerts</h3>
+            {rippleAlerts.slice(0, 2).map((r, i) => (
+              <RippleAlertCard key={i} {...r} />
+            ))}
+          </>
+        )}
       </div>
     </div>
   )
@@ -452,6 +450,150 @@ function ObligationsTab({
               {...o}
               onDraftClick={onDraftClick}
             />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Quick Ripple Form ────────────────────────────────────────────────────────
+
+const QUICK_EXAMPLES = [
+  { label: 'GST rate change', text: 'GST rate revised for restaurants and food services under QRMP scheme' },
+  { label: 'EPF wage ceiling', text: 'EPF wage ceiling enhanced — EPFO circular increases monthly PF contribution base' },
+  { label: 'FSSAI deadline', text: 'FSSAI annual return deadline extended — FoSCoS portal update for food businesses' },
+  { label: 'TDS threshold', text: 'TDS threshold revised under Income Tax Act — new slab rates for FY 2026-27' },
+]
+
+function QuickRippleForm({
+  onCheck,
+  loading,
+  compact = false,
+}: {
+  onCheck: (description: string, effectiveDate: string) => void
+  loading: boolean
+  compact?: boolean
+}) {
+  const today = new Date().toISOString().split('T')[0]
+  const [description, setDescription] = useState('')
+  const [effectiveDate, setEffectiveDate] = useState(today)
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!description.trim()) return
+    onCheck(description.trim(), effectiveDate)
+  }
+
+  function fillExample(text: string) {
+    setDescription(text)
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 space-y-3">
+      {!compact && (
+        <div>
+          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Quick examples</p>
+          <div className="flex flex-wrap gap-1.5">
+            {QUICK_EXAMPLES.map((ex) => (
+              <button
+                key={ex.label}
+                type="button"
+                onClick={() => fillExample(ex.text)}
+                className="text-xs px-2.5 py-1 bg-purple-50 text-purple-700 border border-purple-100 rounded-full hover:bg-purple-100 transition-colors font-medium"
+              >
+                {ex.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {compact && (
+        <div className="flex flex-wrap gap-1.5 mb-1">
+          {QUICK_EXAMPLES.slice(0, 2).map((ex) => (
+            <button
+              key={ex.label}
+              type="button"
+              onClick={() => fillExample(ex.text)}
+              className="text-xs px-2 py-0.5 bg-purple-50 text-purple-700 border border-purple-100 rounded-full hover:bg-purple-100 transition-colors"
+            >
+              {ex.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <textarea
+        value={description}
+        onChange={(e) => setDescription(e.target.value)}
+        placeholder="Describe the regulation change… e.g. GST rate revised for e-commerce operators"
+        rows={compact ? 2 : 3}
+        className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-400 focus:border-transparent placeholder-gray-400 resize-none"
+      />
+
+      <div className="flex items-center gap-2">
+        <input
+          type="date"
+          value={effectiveDate}
+          onChange={(e) => setEffectiveDate(e.target.value)}
+          className="border border-gray-200 rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-purple-400 focus:border-transparent"
+        />
+        <button
+          type="submit"
+          disabled={loading || !description.trim()}
+          className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 bg-purple-600 hover:bg-purple-700 disabled:bg-purple-300 text-white text-xs font-semibold rounded-lg transition-colors"
+        >
+          {loading ? (
+            <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+          ) : (
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+            </svg>
+          )}
+          {loading ? 'Analysing…' : 'Run Ripple Check'}
+        </button>
+      </div>
+    </form>
+  )
+}
+
+// ─── Ripple Tab ───────────────────────────────────────────────────────────────
+
+function RippleTab({
+  alerts,
+  onCheck,
+  loading,
+}: {
+  alerts: RippleReport[]
+  onCheck: (description: string, effectiveDate: string) => void
+  loading: boolean
+}) {
+  return (
+    <div className="space-y-5">
+      <div>
+        <h3 className="font-semibold text-gray-800 mb-1">Regulatory Ripple Detection</h3>
+        <p className="text-xs text-gray-500">
+          Describe a regulatory change — AI analyses which of your obligations are directly or indirectly impacted using semantic vector search.
+        </p>
+      </div>
+
+      <QuickRippleForm onCheck={onCheck} loading={loading} />
+
+      {alerts.length === 0 ? (
+        <div className="text-center py-10 text-gray-400">
+          <svg className="w-10 h-10 mx-auto mb-3 opacity-40" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+              d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+          </svg>
+          <p className="text-sm font-medium">No checks run yet</p>
+          <p className="text-xs mt-1">Run a ripple check above to see which obligations are affected</p>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <p className="text-xs text-gray-500 font-medium">{alerts.length} check{alerts.length > 1 ? 's' : ''} run this session</p>
+          {alerts.map((r, i) => (
+            <RippleAlertCard key={i} {...r} />
           ))}
         </div>
       )}
