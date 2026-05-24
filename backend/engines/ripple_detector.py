@@ -43,21 +43,27 @@ async def detect_ripple(
                     }
                 },
             ]
+            raw_scores = []
             async for reg in db.regulatory_corpus.aggregate(pipeline):
                 score = reg.get("score", 0)
+                raw_scores.append((reg.get("name", "")[:50], round(score, 3)))
                 entry = {
                     "_id": str(reg["_id"]),
                     "name": reg.get("name", ""),
                     "category": reg.get("category", ""),
                     "similarity_score": round(score, 3),
                 }
-                if score >= 0.80:
+                if score >= 0.75:
                     direct_matches.append(entry)
-                elif score >= 0.60:
+                elif score >= 0.50:
                     indirect_matches.append(entry)
+            if raw_scores:
+                print(f"Vector search top scores: {raw_scores[:5]}")
+            else:
+                print("Vector search returned 0 results — Atlas index may need recreation (3072 dims)")
             detection_method = "vector_search"
-        except Exception:
-            # Atlas Vector Search index not yet configured — fall back gracefully
+        except Exception as e:
+            print(f"Vector search failed: {e} — falling back to category match")
             direct_matches = await _category_fallback(db, business_id, affected_categories)
             indirect_matches = []  # discard any partial vector results
 
