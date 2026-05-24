@@ -59,6 +59,7 @@ async def detect_ripple(
         except Exception:
             # Atlas Vector Search index not yet configured — fall back gracefully
             direct_matches = await _category_fallback(db, business_id, affected_categories)
+            indirect_matches = []  # discard any partial vector results
 
     else:
         direct_matches = await _category_fallback(db, business_id, affected_categories)

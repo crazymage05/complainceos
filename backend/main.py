@@ -304,6 +304,7 @@ async def get_obligations(
     historical_on_time_rate = (on_time_filed / total_filed) if total_filed > 0 else 1.0
 
     obligations = []
+    now = datetime.utcnow()
     cursor = db.obligation_instances.find({"business_id": business_id})
     async for inst in cursor:
         due_date_raw = inst.get("due_date")
@@ -317,8 +318,6 @@ async def get_obligations(
                     due_dt = None
         else:
             due_dt = None
-
-        now = datetime.utcnow()
         if due_dt:
             days_remaining = (due_dt - now).total_seconds() / 86400.0
         else:

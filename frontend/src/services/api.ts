@@ -234,6 +234,18 @@ export async function getObligations(
   return obligations.map(transformObligation)
 }
 
+function _inferCategories(description: string): string[] {
+  const d = description.toLowerCase()
+  const cats: string[] = []
+  if (d.includes('gst') || d.includes('tax') || d.includes('tds') || d.includes('itc')) cats.push('taxation')
+  if (d.includes('epf') || d.includes('pf') || d.includes('esi') || d.includes('labour') || d.includes('employee')) cats.push('labour')
+  if (d.includes('fssai') || d.includes('food') || d.includes('safety')) cats.push('food_safety')
+  if (d.includes('shop') || d.includes('establishment')) cats.push('shops_establishments')
+  if (d.includes('companies act') || d.includes('mca') || d.includes('roc')) cats.push('companies_act')
+  if (d.includes('income tax') || d.includes('itr')) cats.push('income_tax')
+  return cats.length > 0 ? cats : ['taxation']
+}
+
 export async function checkRipple(
   businessId: string,
   change: RegChange
@@ -242,7 +254,7 @@ export async function checkRipple(
     business_id: businessId,
     regulation_change: {
       title: change.description,
-      affected_categories: [change.regulation_id],
+      affected_categories: _inferCategories(change.description),
       affected_registrations: [],
       severity: 'medium',
       effective_date: change.effective_date,
