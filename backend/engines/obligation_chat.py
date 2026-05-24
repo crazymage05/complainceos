@@ -79,7 +79,8 @@ async def chat_discover(
         result.setdefault("discovered", [])
         result.setdefault("suggestions", [])
         result.setdefault("new_facts", {})
-    except Exception:
+    except Exception as e:
+        print(f"Gemini error in chat_discover: {e}")
         result = {
             "reply": "Do you employ contract workers or gig workers alongside your full-time staff? Many businesses miss EPF/ESI obligations for this category.",
             "discovered": [],

@@ -61,7 +61,8 @@ async def interpret_circular(
         result.setdefault("urgency", "medium")
         result.setdefault("affected_categories", [])
         return result
-    except Exception:
+    except Exception as e:
+        print(f"Gemini error in interpret_circular: {e}")
         return {
             "plain_summary": "Could not parse this circular automatically. Please consult your CA for interpretation.",
             "affected_business_types": [],

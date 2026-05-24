@@ -6,6 +6,7 @@ import {
   getFilingHistory,
   generateDraft,
   checkRipple,
+  pingHealth,
   type ObligationInstance,
   type FilingHistory as FilingHistoryType,
   type DraftDocument,
@@ -61,6 +62,9 @@ export default function Dashboard({ user }: DashboardProps) {
   const businessName = localStorage.getItem('business_name') ?? 'Your Business'
 
   useEffect(() => {
+    // Wake Railway before the first real API call — prevents cold-start delay during demo
+    pingHealth()
+
     async function loadData() {
       setLoading(true)
       try {

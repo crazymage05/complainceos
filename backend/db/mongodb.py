@@ -30,6 +30,7 @@ async def create_indexes(db: AsyncIOMotorDatabase):
     await db.regulatory_changes.create_index([("effective_date", -1)])
     await db.agent_decisions.create_index([("business_id", 1), ("timestamp", -1)])
     await db.filing_history.create_index([("business_id", 1), ("regulation_id", 1)])
+    await db.chat_discoveries.create_index([("business_id", 1), ("discovered_at", -1)])
 
     # Time series collection for decay score history
     await _ensure_timeseries_collection(db)

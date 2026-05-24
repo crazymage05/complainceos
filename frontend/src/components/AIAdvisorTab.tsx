@@ -42,6 +42,39 @@ const URGENCY_STYLES: Record<string, string> = {
 
 const CIRCULAR_CHAR_LIMIT = 8000
 
+// Reconstruct baseline business_facts from persisted discoveries so Gemini
+// doesn't re-ask questions already answered in a previous session.
+function seedFactsFromDiscoveries(discoveries: ChatDiscovery[]): Record<string, unknown> {
+  if (!discoveries.length) return {}
+  const facts: Record<string, unknown> = { onboarding_started: true }
+  for (const d of discoveries) {
+    const n = d.obligation_name.toLowerCase()
+    const c = d.category.toLowerCase()
+    if (n.includes('tcs') || n.includes('ecommerce') || n.includes('e-commerce') || n.includes('delivery platform')) {
+      facts['uses_delivery_platforms'] = true
+    }
+    if (n.includes('epf') || n.includes('pf') || n.includes('esi') || n.includes('contract worker') || c === 'labour') {
+      facts['has_employees'] = true
+    }
+    if (n.includes('fssai') || c === 'food_safety') {
+      facts['serves_food'] = true
+    }
+    if (n.includes('posh') || n.includes('sexual harassment')) {
+      facts['has_10_plus_employees'] = true
+    }
+    if (n.includes('import') || n.includes('export') || n.includes('iec')) {
+      facts['has_international_trade'] = true
+    }
+    if (n.includes('fire') || n.includes('noc')) {
+      facts['has_physical_premises'] = true
+    }
+    if (n.includes('shop') || n.includes('establishment') || c === 'shops_establishments') {
+      facts['has_physical_shop'] = true
+    }
+  }
+  return facts
+}
+
 function ChatView({
   businessId,
   onGoToObligations,
@@ -59,10 +92,16 @@ function ChatView({
   const [persistedDiscoveries, setPersistedDiscoveries] = useState<ChatDiscovery[]>([])
   const bottomRef = useRef<HTMLDivElement>(null)
 
-  // Fix 4: Load existing discoveries from MongoDB on mount
+  // Load existing discoveries from MongoDB on mount + reconstruct businessFacts
+  // so Gemini doesn't re-ask questions from a previous session
   useEffect(() => {
     getChatDiscoveries(businessId)
-      .then(setPersistedDiscoveries)
+      .then((discoveries) => {
+        setPersistedDiscoveries(discoveries)
+        if (discoveries.length) {
+          setBusinessFacts(seedFactsFromDiscoveries(discoveries))
+        }
+      })
       .catch(() => {})
   }, [businessId])
 

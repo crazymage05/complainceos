@@ -162,7 +162,8 @@ async def generate_draft(
 
     try:
         regulation = await db.regulatory_corpus.find_one({"_id": ObjectId(regulation_id)})
-    except Exception:
+    except Exception as e:
+        print(f"regulation_id lookup failed for '{regulation_id}': {e} — advisor notes will use category defaults")
         regulation = None
 
     if not business or not template:

@@ -780,16 +780,66 @@ async def chat_discover_endpoint(
         summarise=payload.summarise,
     )
 
-    # Persist each newly discovered obligation to MongoDB
+    # Urgency → default days until due
+    _urgency_days = {"immediate": 7, "next_30_days": 30, "annual": 90}
+    # Category → default penalty / frequency for new instances
+    _cat_defaults = {
+        "taxation": {"max_penalty_inr": 50000, "frequency": "monthly"},
+        "labour": {"max_penalty_inr": 25000, "frequency": "monthly"},
+        "food_safety": {"max_penalty_inr": 25000, "frequency": "annual"},
+        "companies_act": {"max_penalty_inr": 100000, "frequency": "annual"},
+        "fire_safety": {"max_penalty_inr": 10000, "frequency": "annual"},
+        "shops_establishments": {"max_penalty_inr": 5000, "frequency": "annual"},
+    }
+
+    now_ts = datetime.utcnow()
+
+    # Persist each newly discovered obligation to MongoDB and close the loop
+    # by creating an obligation_instance so it appears in Obligations tab
     for disc in result.get("discovered", []):
+        disc_name = disc.get("name", "")
+        disc_cat = disc.get("category", "other")
+        disc_urgency = disc.get("urgency", "annual")
+
         await db.chat_discoveries.insert_one({
             "business_id": payload.business_id,
-            "obligation_name": disc.get("name", ""),
+            "obligation_name": disc_name,
             "reason": disc.get("reason", ""),
-            "category": disc.get("category", ""),
-            "urgency": disc.get("urgency", "annual"),
-            "discovered_at": datetime.utcnow(),
+            "category": disc_cat,
+            "urgency": disc_urgency,
+            "discovered_at": now_ts,
         })
+
+        # Check if a similar obligation already exists for this business
+        # (case-insensitive prefix match on first 40 chars)
+        name_prefix = disc_name[:40].lower()
+        existing = await db.obligation_instances.find_one({
+            "business_id": payload.business_id,
+            "name": {"$regex": f"^{name_prefix[:20]}", "$options": "i"},
+        })
+
+        if not existing and disc_name:
+            cat_def = _cat_defaults.get(disc_cat, {"max_penalty_inr": 10000, "frequency": "annual"})
+            days_until_due = _urgency_days.get(disc_urgency, 90)
+            due_date = now_ts + timedelta(days=days_until_due)
+            await db.obligation_instances.insert_one({
+                "business_id": payload.business_id,
+                "regulation_id": f"ai_advisor_{disc_name[:30].lower().replace(' ', '_')}",
+                "name": disc_name,
+                "category": disc_cat,
+                "frequency": cat_def["frequency"],
+                "deadline_rule": disc.get("reason", "Discovered via AI Advisor"),
+                "penalty_type": "fixed",
+                "max_penalty_inr": cat_def["max_penalty_inr"],
+                "complexity": 2,
+                "depends_on": [],
+                "imprisonment_risk": False,
+                "status": "pending",
+                "source": "ai_advisor",
+                "decay_score": None,
+                "due_date": due_date,
+                "created_at": now_ts,
+            })
 
     await _log_decision(db, payload.business_id, "chat_discover", {
         "message_count": len(payload.messages),

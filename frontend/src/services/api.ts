@@ -244,6 +244,14 @@ function transformDraft(raw: any): DraftDocument {
 
 // ─── API Functions ───────────────────────────────────────────────────────────
 
+export async function pingHealth(): Promise<void> {
+  try {
+    await api.get('/health', { timeout: 8000 })
+  } catch {
+    // silent — purpose is to wake Railway, not to surface errors
+  }
+}
+
 export async function createBusiness(
   data: BusinessProfile & { incorporation_date?: string }
 ): Promise<{ business_id: string; dna: DNASummary }> {
