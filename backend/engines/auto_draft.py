@@ -160,11 +160,15 @@ async def generate_draft(
     if not template:
         template = await db.filing_templates.find_one({})
 
+    # regulation_id may be a plain string key ("reg_001") or an ObjectId hex —
+    # try ObjectId first, fall back to direct string match
+    regulation = None
     try:
         regulation = await db.regulatory_corpus.find_one({"_id": ObjectId(regulation_id)})
-    except Exception as e:
-        print(f"regulation_id lookup failed for '{regulation_id}': {e} — advisor notes will use category defaults")
-        regulation = None
+    except Exception:
+        pass
+    if not regulation:
+        regulation = await db.regulatory_corpus.find_one({"_id": regulation_id})
 
     if not business or not template:
         return {"error": "Business or template not found"}
