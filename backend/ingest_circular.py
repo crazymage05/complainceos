@@ -129,18 +129,21 @@ async def run(source: str, text: str):
         indirect = len(result.get("indirectly_impacted", []))
         if direct + indirect > 0:
             ripple_summary.append(f"  {biz.get('name', bid)}: {direct} direct, {indirect} indirect")
-            # Persist the ripple result
-            await db.regulatory_changes.insert_one({
-                "business_id": bid,
-                "title": meta.get("name", source),
-                "source": source,
-                "category": category,
-                "affected_categories": [category],
-                "severity": result.get("severity", "medium"),
-                "directly_impacted": result.get("directly_impacted", []),
-                "indirectly_impacted": result.get("indirectly_impacted", []),
-                "detected_at": datetime.utcnow(),
-            })
+            # Upsert ripple result — prevents duplicate records on re-run
+            await db.regulatory_changes.update_one(
+                {"business_id": bid, "source": source},
+                {"$set": {
+                    "title": meta.get("name", source),
+                    "source": source,
+                    "category": category,
+                    "affected_categories": [category],
+                    "severity": result.get("severity", "medium"),
+                    "directly_impacted": result.get("directly_impacted", []),
+                    "indirectly_impacted": result.get("indirectly_impacted", []),
+                    "detected_at": datetime.utcnow(),
+                }},
+                upsert=True,
+            )
 
     if ripple_summary:
         print("Ripple impact:")

@@ -1,4 +1,5 @@
 import os
+import time
 from google import genai
 from google.genai import types
 
@@ -15,9 +16,16 @@ def _get_client() -> genai.Client:
 
 
 def get_completion(prompt: str, system: str = "") -> str:
-    if PHASE == "1":
-        return _gemini_completion(prompt, system)
-    return _ollama_completion(prompt, system)
+    for attempt in range(3):
+        try:
+            if PHASE == "1":
+                return _gemini_completion(prompt, system)
+            return _ollama_completion(prompt, system)
+        except Exception as e:
+            if "429" in str(e) and attempt < 2:
+                time.sleep(5 * (attempt + 1))
+                continue
+            raise
 
 
 def get_embedding(text: str) -> list[float]:

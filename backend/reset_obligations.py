@@ -50,16 +50,28 @@ async def run():
         period_days = FREQ_DAYS[freq]
         next_due = due_dt + timedelta(days=period_days)
 
-        # Idempotency check: skip if a pending instance already exists
+        # Idempotency check: skip if a pending instance exists within ±3 days
+        # of the specific next period (not just any future pending instance)
         existing = await db.obligation_instances.find_one({
             "business_id": inst["business_id"],
             "regulation_id": inst["regulation_id"],
             "status": "pending",
-            "due_date": {"$gte": now},
+            "due_date": {
+                "$gte": next_due - timedelta(days=3),
+                "$lte": next_due + timedelta(days=3),
+            },
         })
         if existing:
             skipped += 1
             continue
+
+        # Personalised complexity: each late filing adds 0.5 to complexity weight
+        times_late = await db.filing_history.count_documents({
+            "business_id": inst["business_id"],
+            "regulation_id": inst["regulation_id"],
+            "on_time": False,
+        })
+        adjusted_complexity = inst.get("complexity", 2) + (times_late * 0.5)
 
         new_inst = {
             "business_id": inst["business_id"],
@@ -70,7 +82,7 @@ async def run():
             "deadline_rule": inst.get("deadline_rule", ""),
             "penalty_type": inst.get("penalty_type", "financial"),
             "max_penalty_inr": inst.get("max_penalty_inr", 10000),
-            "complexity": inst.get("complexity", 2),
+            "complexity": adjusted_complexity,
             "depends_on": inst.get("depends_on", []),
             "imprisonment_risk": inst.get("imprisonment_risk", False),
             "status": "pending",
@@ -81,9 +93,30 @@ async def run():
         }
         await db.obligation_instances.insert_one(new_inst)
         created += 1
-        print(f"  Reset: {inst['name'][:60]} -> next due {next_due.date()}")
+        print(f"  Reset: {inst['name'][:60]} -> next due {next_due.date()} complexity={adjusted_complexity}")
 
-    print(f"\nDone. Created: {created}  Skipped (already pending): {skipped}")
+    # Escalate overdue obligations: mark status=overdue and compute live penalty
+    escalated = 0
+    async for inst in db.obligation_instances.find({
+        "status": "pending",
+        "due_date": {"$lt": now},
+    }):
+        due_dt = inst["due_date"] if isinstance(inst["due_date"], datetime) else datetime.fromisoformat(str(inst["due_date"]))
+        days_late = max(int((now - due_dt).total_seconds() / 86400), 1)
+        max_pen = inst.get("max_penalty_inr", 10000)
+        per_day = max_pen / 100
+        projected = min(round(days_late * per_day, 2), max_pen)
+        await db.obligation_instances.update_one(
+            {"_id": inst["_id"]},
+            {"$set": {
+                "status": "overdue",
+                "days_late": days_late,
+                "projected_penalty_inr": projected,
+            }},
+        )
+        escalated += 1
+
+    print(f"\nDone. Created: {created}  Skipped (already pending): {skipped}  Escalated overdue: {escalated}")
 
 
 asyncio.run(run())

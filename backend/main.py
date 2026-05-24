@@ -370,15 +370,20 @@ async def get_obligations(
             {"$set": {"decay_score": decay, "urgency": urgency}},
         )
 
-        # Write time series snapshot (fire-and-forget; non-blocking on failure)
+        # Write time series snapshot at most once per hour per obligation
         try:
-            await db.decay_score_snapshots.insert_one({
-                "instance_id": str(inst["_id"]),
-                "business_id": business_id,
-                "decay_score": decay,
-                "urgency": urgency,
-                "timestamp": now,
-            })
+            last_snap = await db.decay_score_snapshots.find_one(
+                {"instance_id": str(inst["_id"])},
+                sort=[("timestamp", -1)],
+            )
+            if not last_snap or (now - last_snap["timestamp"]).total_seconds() > 3600:
+                await db.decay_score_snapshots.insert_one({
+                    "instance_id": str(inst["_id"]),
+                    "business_id": business_id,
+                    "decay_score": decay,
+                    "urgency": urgency,
+                    "timestamp": now,
+                })
         except Exception:
             pass
 
@@ -810,12 +815,12 @@ async def chat_discover_endpoint(
             "discovered_at": now_ts,
         })
 
-        # Check if a similar obligation already exists for this business
-        # (case-insensitive prefix match on first 40 chars)
-        name_prefix = disc_name[:40].lower()
+        # Check if a similar obligation already exists (regex-escaped prefix match)
+        import re as _re
+        safe_prefix = _re.escape(disc_name[:20])
         existing = await db.obligation_instances.find_one({
             "business_id": payload.business_id,
-            "name": {"$regex": f"^{name_prefix[:20]}", "$options": "i"},
+            "name": {"$regex": f"^{safe_prefix}", "$options": "i"},
         })
 
         if not existing and disc_name:
@@ -900,6 +905,139 @@ async def circular_interpret_endpoint(
     })
 
     return result
+
+
+class IngestCircularRequest(BaseModel):
+    source: str
+    text: str
+
+
+# POST /admin/ingest-circular
+@app.post("/admin/ingest-circular")
+async def admin_ingest_circular(
+    payload: IngestCircularRequest,
+    db: AsyncIOMotorDatabase = Depends(db_dep),
+):
+    """
+    Embed a new government circular, upsert it into regulatory_corpus,
+    and trigger ripple detection across ALL active businesses.
+    Returns the ripple summary so the caller sees immediate impact.
+    """
+    import re as _re
+    import hashlib
+    from model_client import get_embedding, get_completion
+
+    CATEGORY_KEYWORDS = {
+        "taxation": ["gst", "cbic", "tds", "income tax", "itc", "gstr"],
+        "labour": ["epf", "esic", "epfo", "pf", "esi", "wage", "labour"],
+        "food_safety": ["fssai", "food safety", "foscos"],
+        "companies_act": ["mca", "companies act", "roc"],
+        "income_tax": ["income tax", "cbdt", "itr"],
+    }
+    lower = (payload.text + " " + payload.source).lower()
+    category = next(
+        (cat for cat, kws in CATEGORY_KEYWORDS.items() if any(k in lower for k in kws)),
+        "other",
+    )
+
+    slug = _re.sub(r"[^a-z0-9]", "_", payload.source.lower())[:40]
+    suffix = hashlib.md5(payload.source.encode()).hexdigest()[:6]
+    reg_id = f"ingested_{slug}_{suffix}"
+
+    meta: Dict[str, Any] = {}
+    try:
+        prompt = (
+            "Extract structured metadata from this Indian government circular. "
+            "Respond ONLY with valid JSON: "
+            '{"name":"short name","deadline_rule":"","max_penalty_inr":0,"imprisonment_risk":false}\n'
+            f"Source: {payload.source}\nText: {payload.text[:2000]}"
+        )
+        import json as _json
+        raw = get_completion(prompt)
+        raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+        meta = _json.loads(raw)
+    except Exception:
+        meta = {"name": payload.source[:80], "deadline_rule": "", "max_penalty_inr": 10000}
+
+    embed_text = f"{meta.get('name', payload.source)} {category} {meta.get('deadline_rule', '')} {payload.source}"
+    embedding = await asyncio.to_thread(get_embedding, embed_text)
+
+    doc = {
+        "_id": reg_id,
+        "name": meta.get("name", payload.source[:80]),
+        "jurisdiction": "India",
+        "state_specific": None,
+        "category": category,
+        "applicable_to": {"industries": ["all"], "min_turnover_inr": 0, "registrations_required": [], "min_employees": 0},
+        "frequency": "one_time",
+        "deadline_rule": meta.get("deadline_rule", ""),
+        "complexity": 2,
+        "penalty_type": "financial",
+        "imprisonment_risk": meta.get("imprisonment_risk", False),
+        "depends_on": [],
+        "last_updated": datetime.utcnow().strftime("%Y-%m-%d"),
+        "source": payload.source,
+        "max_penalty_inr": meta.get("max_penalty_inr", 10000),
+        "embedding": embedding,
+        "raw_text": payload.text[:8000],
+        "ingested_at": datetime.utcnow(),
+    }
+    existing = await db.regulatory_corpus.find_one({"_id": reg_id})
+    if existing:
+        await db.regulatory_corpus.replace_one({"_id": reg_id}, doc)
+    else:
+        await db.regulatory_corpus.insert_one(doc)
+
+    # Ripple across all businesses
+    ripple_summary = []
+    async for biz in db.businesses.find({}, {"_id": 1, "name": 1}):
+        bid = str(biz["_id"])
+        ripple = await detect_ripple(
+            db=db,
+            business_id=bid,
+            affected_categories=[category],
+            affected_registrations=[],
+            change_description=payload.text[:500],
+        )
+        direct = len(ripple.get("directly_impacted", []))
+        indirect = len(ripple.get("indirectly_impacted", []))
+        if direct + indirect > 0:
+            ripple_summary.append({
+                "business_id": bid,
+                "business_name": biz.get("name", bid),
+                "direct": direct,
+                "indirect": indirect,
+                "severity": ripple.get("severity", "medium"),
+            })
+            await db.regulatory_changes.update_one(
+                {"business_id": bid, "source": payload.source},
+                {"$set": {
+                    "title": meta.get("name", payload.source),
+                    "source": payload.source,
+                    "category": category,
+                    "affected_categories": [category],
+                    "severity": ripple.get("severity", "medium"),
+                    "directly_impacted": ripple.get("directly_impacted", []),
+                    "indirectly_impacted": ripple.get("indirectly_impacted", []),
+                    "detected_at": datetime.utcnow(),
+                }},
+                upsert=True,
+            )
+
+    await _log_decision(db, "admin", "ingest_circular", {
+        "source": payload.source,
+        "reg_id": reg_id,
+        "category": category,
+        "businesses_affected": len(ripple_summary),
+    })
+
+    return {
+        "reg_id": reg_id,
+        "name": meta.get("name", payload.source),
+        "category": category,
+        "businesses_affected": len(ripple_summary),
+        "ripple_summary": ripple_summary,
+    }
 
 
 # GET /agent-decisions/{business_id}
