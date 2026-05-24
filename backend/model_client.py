@@ -21,10 +21,10 @@ def get_completion(prompt: str, system: str = "") -> str:
 
 
 def get_embedding(text: str) -> list[float]:
-    """Return 768-dim embedding vector using text-embedding-004."""
+    """Return 3072-dim embedding vector using gemini-embedding-001."""
     client = _get_client()
     response = client.models.embed_content(
-        model="text-embedding-004",
+        model="models/gemini-embedding-001",
         contents=text,
     )
     return list(response.embeddings[0].values)
@@ -36,7 +36,7 @@ def _gemini_completion(prompt: str, system: str) -> str:
         system_instruction=system if system else None
     ) if system else None
     response = client.models.generate_content(
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
         contents=prompt,
         config=config,
     )

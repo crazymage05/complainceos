@@ -29,7 +29,7 @@ GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
 
 def embed_text(client: genai.Client, text: str) -> list:
     response = client.models.embed_content(
-        model="text-embedding-004",
+        model="models/gemini-embedding-001",
         contents=text,
     )
     return list(response.embeddings[0].values)
