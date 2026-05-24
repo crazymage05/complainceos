@@ -35,7 +35,7 @@ export interface ObligationInstance {
   deadline: string
   decay_score: number
   predicted_penalty_inr: number
-  status: 'pending' | 'in_progress' | 'filed' | 'overdue'
+  status: 'pending' | 'in_progress' | 'filed' | 'overdue' | 'proposed'
   period: string
   description: string
 }
@@ -415,6 +415,16 @@ export async function interpretCircular(
     circular_text: circularText,
     circular_source: circularSource,
   })
+  return res.data
+}
+
+export async function confirmObligation(instanceId: string): Promise<{ status: string }> {
+  const res = await api.post(`/obligations/${instanceId}/confirm`)
+  return res.data
+}
+
+export async function dismissObligation(instanceId: string): Promise<{ status: string }> {
+  const res = await api.delete(`/obligations/${instanceId}/dismiss`)
   return res.data
 }
 

@@ -9,3 +9,7 @@ restartPolicyMaxRetries = 3
 [[cron]]
 schedule = "0 2 * * *"
 command = "python reset_obligations.py"
+
+[[cron]]
+schedule = "0 6 * * *"
+command = "python fetch_circulars.py"

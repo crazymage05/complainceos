@@ -7,6 +7,8 @@ import {
   generateDraft,
   checkRipple,
   pingHealth,
+  confirmObligation,
+  dismissObligation,
   type ObligationInstance,
   type FilingHistory as FilingHistoryType,
   type DraftDocument,
@@ -103,6 +105,26 @@ export default function Dashboard({ user }: DashboardProps) {
 
   function handleApprove(instanceId: string) {
     setDrafts((prev) => prev.filter((d) => d.instance_id !== instanceId))
+  }
+
+  async function handleConfirmObligation(instanceId: string) {
+    try {
+      await confirmObligation(instanceId)
+      setObligations((prev) =>
+        prev.map((o) => o.instance_id === instanceId ? { ...o, status: 'pending' as const } : o)
+      )
+    } catch {
+      // silently fail — UI stays as proposed
+    }
+  }
+
+  async function handleDismissObligation(instanceId: string) {
+    try {
+      await dismissObligation(instanceId)
+      setObligations((prev) => prev.filter((o) => o.instance_id !== instanceId))
+    } catch {
+      // silently fail
+    }
   }
 
   async function handleRippleCheck(description: string, effectiveDate: string) {
@@ -276,6 +298,8 @@ export default function Dashboard({ user }: DashboardProps) {
               loading={loading}
               onDraftClick={handleDraftClick}
               generatingDraft={generatingDraft}
+              onConfirm={handleConfirmObligation}
+              onDismiss={handleDismissObligation}
             />
           )}
           {activeTab === 'ripple' && (
@@ -396,30 +420,89 @@ function ObligationsTab({
   loading,
   onDraftClick,
   generatingDraft: _generatingDraft,
+  onConfirm,
+  onDismiss,
 }: {
   obligations: ObligationInstance[]
   loading: boolean
   onDraftClick: (id: string) => void
   generatingDraft: string | null
+  onConfirm: (id: string) => void
+  onDismiss: (id: string) => void
 }) {
   const [filter, setFilter] = useState<'all' | 'urgent' | 'warning' | 'on_track'>('all')
+  const [confirming, setConfirming] = useState<string | null>(null)
 
-  const filtered = obligations.filter((o) => {
+  const proposed = obligations.filter((o) => o.status === 'proposed')
+  const active = obligations.filter((o) => o.status !== 'proposed')
+
+  const filtered = active.filter((o) => {
     if (filter === 'urgent') return o.decay_score < 20
     if (filter === 'warning') return o.decay_score >= 20 && o.decay_score <= 40
     if (filter === 'on_track') return o.decay_score > 40
     return true
   })
 
+  async function handleConfirm(id: string) {
+    setConfirming(id)
+    await onConfirm(id)
+    setConfirming(null)
+  }
+
   return (
     <div className="space-y-4">
-      {/* Filters */}
+      {/* Proposed obligations — AI-discovered, awaiting review */}
+      {proposed.length > 0 && (
+        <div className="bg-purple-50 border border-purple-200 rounded-xl p-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <svg className="w-4 h-4 text-purple-600 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+            </svg>
+            <p className="text-sm font-semibold text-purple-800">
+              {proposed.length} obligation{proposed.length > 1 ? 's' : ''} discovered by AI Advisor — review before tracking
+            </p>
+          </div>
+          <div className="space-y-2">
+            {proposed.map((o) => (
+              <div key={o.instance_id} className="bg-white rounded-lg border border-purple-100 p-3 flex items-start gap-3">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold text-gray-900">{o.obligation_name}</p>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    <span className="capitalize">{o.framework}</span>
+                    {o.description && ` · ${o.description.slice(0, 80)}`}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <button
+                    onClick={() => onDismiss(o.instance_id)}
+                    className="px-2.5 py-1 text-xs font-medium text-gray-500 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
+                  >
+                    Dismiss
+                  </button>
+                  <button
+                    onClick={() => handleConfirm(o.instance_id)}
+                    disabled={confirming === o.instance_id}
+                    className="px-2.5 py-1 text-xs font-semibold text-white bg-purple-600 hover:bg-purple-700 disabled:bg-purple-300 rounded-lg transition-colors flex items-center gap-1"
+                  >
+                    {confirming === o.instance_id ? (
+                      <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    ) : 'Confirm'}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Filters — apply only to active (non-proposed) obligations */}
       <div className="flex items-center gap-2 flex-wrap">
         {[
-          { id: 'all', label: 'All', count: obligations.length },
-          { id: 'urgent', label: 'Urgent', count: obligations.filter((o) => o.decay_score < 20).length },
-          { id: 'warning', label: 'Warning', count: obligations.filter((o) => o.decay_score >= 20 && o.decay_score <= 40).length },
-          { id: 'on_track', label: 'On Track', count: obligations.filter((o) => o.decay_score > 40).length },
+          { id: 'all', label: 'All', count: active.length },
+          { id: 'urgent', label: 'Urgent', count: active.filter((o) => o.decay_score < 20).length },
+          { id: 'warning', label: 'Warning', count: active.filter((o) => o.decay_score >= 20 && o.decay_score <= 40).length },
+          { id: 'on_track', label: 'On Track', count: active.filter((o) => o.decay_score > 40).length },
         ].map((f) => (
           <button
             key={f.id}

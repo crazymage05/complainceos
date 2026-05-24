@@ -839,7 +839,7 @@ async def chat_discover_endpoint(
                 "complexity": 2,
                 "depends_on": [],
                 "imprisonment_risk": False,
-                "status": "pending",
+                "status": "proposed",
                 "source": "ai_advisor",
                 "decay_score": None,
                 "due_date": due_date,
@@ -869,6 +869,83 @@ async def get_chat_discoveries(
     ):
         discoveries.append(_serialize(doc))
     return {"business_id": business_id, "discoveries": discoveries}
+
+
+# POST /obligations/{instance_id}/confirm
+@app.post("/obligations/{instance_id}/confirm")
+async def confirm_obligation(
+    instance_id: str,
+    db: AsyncIOMotorDatabase = Depends(db_dep),
+):
+    """
+    Confirm a proposed (AI-discovered) obligation.
+    Moves status from 'proposed' → 'pending' so it enters active tracking.
+    """
+    try:
+        oid = ObjectId(instance_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid instance_id")
+    inst = await db.obligation_instances.find_one({"_id": oid})
+    if not inst:
+        raise HTTPException(status_code=404, detail="Obligation not found")
+    if inst.get("status") != "proposed":
+        raise HTTPException(status_code=400, detail="Obligation is not in proposed state")
+    await db.obligation_instances.update_one(
+        {"_id": oid},
+        {"$set": {"status": "pending", "confirmed_at": datetime.utcnow()}},
+    )
+    await _log_decision(db, inst["business_id"], "confirm_obligation", {"instance_id": instance_id})
+    return {"instance_id": instance_id, "status": "pending"}
+
+
+# DELETE /obligations/{instance_id}/dismiss
+@app.delete("/obligations/{instance_id}/dismiss")
+async def dismiss_obligation(
+    instance_id: str,
+    db: AsyncIOMotorDatabase = Depends(db_dep),
+):
+    """Delete a proposed obligation the user has rejected."""
+    try:
+        oid = ObjectId(instance_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid instance_id")
+    inst = await db.obligation_instances.find_one({"_id": oid})
+    if not inst or inst.get("status") != "proposed":
+        raise HTTPException(status_code=404, detail="Proposed obligation not found")
+    await db.obligation_instances.delete_one({"_id": oid})
+    return {"instance_id": instance_id, "status": "dismissed"}
+
+
+# GET /admin/ripple-analytics
+@app.get("/admin/ripple-analytics")
+async def ripple_analytics(
+    db: AsyncIOMotorDatabase = Depends(db_dep),
+):
+    """
+    Aggregate cross-business ripple impact.
+    Groups regulatory_changes by source to show which regulations affected the most businesses.
+    """
+    pipeline = [
+        {"$group": {
+            "_id": "$source",
+            "title": {"$first": "$title"},
+            "category": {"$first": "$category"},
+            "businesses_affected": {"$sum": 1},
+            "total_direct": {"$sum": {"$size": {"$ifNull": ["$directly_impacted", []]}}},
+            "total_indirect": {"$sum": {"$size": {"$ifNull": ["$indirectly_impacted", []]}}},
+            "severity": {"$first": "$severity"},
+            "detected_at": {"$max": "$detected_at"},
+        }},
+        {"$sort": {"businesses_affected": -1}},
+        {"$limit": 20},
+    ]
+    results = []
+    async for doc in db.regulatory_changes.aggregate(pipeline):
+        doc["_id"] = str(doc["_id"])
+        if isinstance(doc.get("detected_at"), datetime):
+            doc["detected_at"] = doc["detected_at"].isoformat()
+        results.append(doc)
+    return {"analytics": results, "total_regulations": len(results)}
 
 
 # POST /circular/interpret
