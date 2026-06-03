@@ -1,0 +1,31 @@
+# Render Blueprint — one-click backend deploy.
+# In Render: New + → Blueprint → connect this repo → it reads this file.
+# Secrets (sync:false) are entered in the Render dashboard, never committed.
+services:
+  - type: web
+    name: complianceos-api
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: MONGODB_DB_NAME
+        value: complianceos
+      - key: PROJECT_PHASE
+        value: "1"
+      - key: AGENT_MODEL
+        value: gemini-2.5-flash
+      - key: GEMINI_RPM
+        value: "10"
+      - key: PYTHON_VERSION
+        value: "3.11"
+      # ── Secrets — set these in the Render dashboard (Environment) ──
+      - key: MONGODB_URI
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: CORS_ORIGINS        # set to your Vercel URL after step 3
+        sync: false

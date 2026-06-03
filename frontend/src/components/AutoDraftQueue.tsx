@@ -1,225 +1,155 @@
 import { useState } from 'react'
-import { approveDraft } from '../services/api'
-import type { DraftDocument, AdvisorNotes } from '../services/api'
 import clsx from 'clsx'
+import { approveDraft, downloadDraftPdf, type DraftDocument } from '../services/api'
+import { pushToast } from './Toaster'
 
-interface AutoDraftQueueProps {
+interface Props {
   drafts: DraftDocument[]
   onApprove: (instanceId: string) => void
 }
 
-interface ToastState {
-  message: string
-  type: 'success' | 'error'
+const RISK_TONE: Record<string, string> = {
+  low: 'bg-accent/15 text-accent-soft',
+  medium: 'bg-amber-500/15 text-amber-300',
+  high: 'bg-red-500/15 text-red-300',
 }
 
-const RISK_STYLES: Record<string, string> = {
-  high: 'bg-red-50 text-red-700 border-red-200',
-  medium: 'bg-amber-50 text-amber-700 border-amber-200',
-  low: 'bg-green-50 text-green-700 border-green-200',
-}
+function DraftCard({ draft, onApprove }: { draft: DraftDocument; onApprove: (id: string) => void }) {
+  const [busy, setBusy] = useState<'pdf' | 'approve' | null>(null)
+  const [showNotes, setShowNotes] = useState(false)
+  const notes = draft.advisor_notes
 
-const RISK_DOT: Record<string, string> = {
-  high: 'bg-red-500',
-  medium: 'bg-amber-500',
-  low: 'bg-green-500',
-}
+  async function handleDownload() {
+    setBusy('pdf')
+    try {
+      await downloadDraftPdf(draft.instance_id, `${draft.obligation_name}.pdf`)
+    } catch {
+      pushToast('Could not download the PDF — try again.', 'error')
+    } finally {
+      setBusy(null)
+    }
+  }
 
-function AdvisorPanel({ notes }: { notes: AdvisorNotes }) {
-  const risk = notes.risk_level ?? 'medium'
+  async function handleApprove() {
+    setBusy('approve')
+    try {
+      await approveDraft(draft.instance_id)
+      pushToast(`Filed: ${draft.obligation_name}. Penalty avoided.`, 'success')
+      onApprove(draft.instance_id)
+    } catch {
+      pushToast('Approval failed — try again.', 'error')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const fields = Object.entries(draft.pre_filled_fields)
+
   return (
-    <div className={clsx('mt-3 rounded-xl border p-4 text-xs space-y-3', RISK_STYLES[risk])}>
-      {/* Risk header */}
-      <div className="flex items-center gap-2 font-semibold">
-        <span className={clsx('w-2 h-2 rounded-full flex-shrink-0', RISK_DOT[risk])} />
-        <span className="capitalize">{risk} Risk</span>
-        <span className="font-normal text-current opacity-80">— {notes.risk_reason}</span>
+    <div className="os-card p-5">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div className="min-w-0">
+          <h3 className="font-semibold text-ink leading-tight">{draft.obligation_name}</h3>
+          <p className="text-xs text-inkFaint mt-0.5">
+            {draft.period} · {draft.fields_count} fields pre-filled · {draft.document_type.toUpperCase()}
+          </p>
+        </div>
+        <span className="os-chip text-[11px] px-2.5 py-1 capitalize">
+          {draft.status.replace(/_/g, ' ')}
+        </span>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        {notes.documents_required.length > 0 && (
-          <div>
-            <p className="font-semibold mb-1 opacity-70 uppercase tracking-wide text-[10px]">Documents needed</p>
-            <ul className="space-y-0.5">
-              {notes.documents_required.map((d, i) => (
-                <li key={i} className="flex items-start gap-1.5">
-                  <span className="mt-0.5 flex-shrink-0 opacity-60">•</span>
-                  {d}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
+      {/* Pre-filled fields */}
+      {fields.length > 0 && (
+        <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-2">
+          {fields.map(([k, v]) => (
+            <div key={k} className="bg-panel2 border border-edge rounded-lg px-3 py-2">
+              <p className="text-[10px] uppercase tracking-wider text-inkFaint">{k.replace(/_/g, ' ')}</p>
+              <p className="text-sm text-inkSoft truncate">{String(v) || <span className="text-inkFaint italic">—</span>}</p>
+            </div>
+          ))}
+        </div>
+      )}
 
-        {notes.common_mistakes.length > 0 && (
-          <div>
-            <p className="font-semibold mb-1 opacity-70 uppercase tracking-wide text-[10px]">Common mistakes</p>
-            <ul className="space-y-0.5">
-              {notes.common_mistakes.map((m, i) => (
-                <li key={i} className="flex items-start gap-1.5">
-                  <span className="mt-0.5 flex-shrink-0 text-red-500">!</span>
-                  {m}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
+      {/* Advisor notes */}
+      {notes && (
+        <div className="mt-4">
+          <button
+            onClick={() => setShowNotes((s) => !s)}
+            className="flex items-center gap-2 text-xs font-semibold text-inkMute hover:text-ink transition-colors"
+          >
+            <span className={clsx('px-1.5 py-0.5 rounded-md text-[10px] font-bold uppercase', RISK_TONE[notes.risk_level] ?? RISK_TONE.medium)}>
+              {notes.risk_level} risk
+            </span>
+            {showNotes ? 'Hide filing guidance' : 'Show filing guidance'}
+          </button>
+          {showNotes && (
+            <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+              <NoteList title="Documents required" items={notes.documents_required} accent="text-accent-soft" />
+              <NoteList title="Common mistakes" items={notes.common_mistakes} accent="text-red-400" />
+              <NoteList title="Filing checklist" items={notes.filing_checklist} accent="text-inkSoft" />
+            </div>
+          )}
+          {showNotes && notes.risk_reason && (
+            <p className="mt-2 text-xs text-inkMute italic">{notes.risk_reason}</p>
+          )}
+        </div>
+      )}
 
-        {notes.filing_checklist.length > 0 && (
-          <div>
-            <p className="font-semibold mb-1 opacity-70 uppercase tracking-wide text-[10px]">Filing checklist</p>
-            <ol className="space-y-0.5 list-none">
-              {notes.filing_checklist.map((step, i) => (
-                <li key={i} className="flex items-start gap-1.5">
-                  <span className="flex-shrink-0 font-bold">{i + 1}.</span>
-                  {step.replace(/^Step \d+:\s*/i, '')}
-                </li>
-              ))}
-            </ol>
-          </div>
-        )}
+      {/* Actions */}
+      <div className="mt-4 flex items-center gap-2">
+        <button onClick={handleDownload} disabled={busy !== null} className="os-btn-ghost text-xs px-3 py-1.5 flex items-center gap-1.5">
+          {busy === 'pdf'
+            ? <span className="w-3.5 h-3.5 border-2 border-inkMute border-t-transparent rounded-full animate-spin" />
+            : <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>}
+          Download PDF
+        </button>
+        <button onClick={handleApprove} disabled={busy !== null} className="os-btn-accent text-xs px-3 py-1.5 ml-auto flex items-center gap-1.5">
+          {busy === 'approve'
+            ? <span className="w-3.5 h-3.5 border-2 border-canvas border-t-transparent rounded-full animate-spin" />
+            : <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>}
+          Approve &amp; File
+        </button>
       </div>
     </div>
   )
 }
 
-export default function AutoDraftQueue({ drafts, onApprove }: AutoDraftQueueProps) {
-  const [loadingId, setLoadingId] = useState<string | null>(null)
-  const [toast, setToast] = useState<ToastState | null>(null)
-  const [dismissed, setDismissed] = useState<Set<string>>(new Set())
-  const [expandedAdvisor, setExpandedAdvisor] = useState<Set<string>>(new Set())
+function NoteList({ title, items, accent }: { title: string; items: string[]; accent: string }) {
+  if (!items || items.length === 0) return null
+  return (
+    <div>
+      <p className="text-[10px] font-bold uppercase tracking-wider text-inkFaint mb-1.5">{title}</p>
+      <ul className="space-y-1">
+        {items.map((it, i) => (
+          <li key={i} className={clsx('flex gap-1.5', 'text-inkMute')}>
+            <span className={clsx('flex-shrink-0', accent)}>•</span>
+            <span>{it}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
 
-  const visible = drafts.filter((d) => !dismissed.has(d.instance_id))
-
-  function showToast(message: string, type: 'success' | 'error') {
-    setToast({ message, type })
-    setTimeout(() => setToast(null), 3500)
-  }
-
-  function toggleAdvisor(id: string) {
-    setExpandedAdvisor((prev) => {
-      const next = new Set(prev)
-      next.has(id) ? next.delete(id) : next.add(id)
-      return next
-    })
-  }
-
-  async function handleApprove(instanceId: string) {
-    setLoadingId(instanceId)
-    try {
-      await approveDraft(instanceId)
-      onApprove(instanceId)
-      setDismissed((prev) => new Set([...prev, instanceId]))
-      showToast('Document approved and queued for filing.', 'success')
-    } catch {
-      showToast('Approval failed. Please try again.', 'error')
-    } finally {
-      setLoadingId(null)
-    }
+export default function AutoDraftQueue({ drafts, onApprove }: Props) {
+  if (drafts.length === 0) {
+    return (
+      <div className="text-center py-10 text-inkFaint">
+        <svg className="w-12 h-12 mx-auto mb-3 opacity-40" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+        </svg>
+        <p className="text-sm font-medium text-inkMute">No drafts in the queue</p>
+        <p className="text-xs mt-1">Hit “Prepare Draft” on any obligation to auto-fill its filing here.</p>
+      </div>
+    )
   }
 
   return (
-    <div className="relative">
-      {/* Toast */}
-      {toast && (
-        <div
-          className={clsx(
-            'fixed top-4 right-4 z-50 px-4 py-3 rounded-xl shadow-lg text-sm font-medium flex items-center gap-2 transition-all',
-            toast.type === 'success' ? 'bg-green-600 text-white' : 'bg-red-600 text-white'
-          )}
-        >
-          {toast.type === 'success' ? (
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-            </svg>
-          ) : (
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          )}
-          {toast.message}
-        </div>
-      )}
-
-      {visible.length === 0 ? (
-        <div className="text-center py-12 text-gray-400">
-          <svg className="w-12 h-12 mx-auto mb-3 opacity-40" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-              d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-          </svg>
-          <p className="text-sm font-medium">No documents pending review</p>
-          <p className="text-xs mt-1">Click "Generate Draft" on any obligation to start</p>
-        </div>
-      ) : (
-        <div className="space-y-4">
-          {visible.map((draft) => {
-            const advisorOpen = expandedAdvisor.has(draft.instance_id)
-            const hasAdvisor = !!draft.advisor_notes
-            return (
-              <div
-                key={draft.instance_id}
-                className="bg-gray-50 rounded-xl border border-gray-100 p-4"
-              >
-                {/* Main row */}
-                <div className="flex items-start gap-4 flex-wrap sm:flex-nowrap">
-                  <div className="flex-1 min-w-0">
-                    <p className="font-semibold text-gray-900 text-sm">{draft.obligation_name}</p>
-                    <div className="flex items-center gap-3 mt-1 text-xs text-gray-500 flex-wrap">
-                      <span>{draft.period}</span>
-                      <span className="px-2 py-0.5 bg-blue-50 text-blue-700 rounded-full font-medium border border-blue-100">
-                        {draft.document_type}
-                      </span>
-                      <span>{draft.fields_count} fields pre-filled</span>
-                      <span>
-                        Generated {new Date(draft.generated_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-2 flex-shrink-0">
-                    {hasAdvisor && (
-                      <button
-                        onClick={() => toggleAdvisor(draft.instance_id)}
-                        className={clsx(
-                          'px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors flex items-center gap-1.5',
-                          advisorOpen
-                            ? 'bg-purple-100 text-purple-700 border-purple-200'
-                            : 'bg-white text-gray-600 border-gray-200 hover:border-purple-300 hover:text-purple-600'
-                        )}
-                      >
-                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                            d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-                        </svg>
-                        AI Advice
-                      </button>
-                    )}
-                    <button
-                      onClick={() => handleApprove(draft.instance_id)}
-                      disabled={loadingId === draft.instance_id}
-                      className="px-3 py-1.5 bg-green-500 hover:bg-green-600 disabled:bg-green-300 text-white text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5"
-                    >
-                      {loadingId === draft.instance_id ? (
-                        <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                      ) : (
-                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                        </svg>
-                      )}
-                      Approve & File
-                    </button>
-                  </div>
-                </div>
-
-                {/* Gemini advisor panel */}
-                {hasAdvisor && advisorOpen && (
-                  <AdvisorPanel notes={draft.advisor_notes!} />
-                )}
-              </div>
-            )
-          })}
-        </div>
-      )}
+    <div className="space-y-4">
+      {drafts.map((d) => (
+        <DraftCard key={d.instance_id} draft={d} onApprove={onApprove} />
+      ))}
     </div>
   )
 }

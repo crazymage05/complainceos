@@ -22,10 +22,10 @@ export default function PenaltyBadge({
 
   const { bg, text } =
     amount_inr > 5000
-      ? { bg: 'bg-red-100', text: 'text-red-700' }
+      ? { bg: 'bg-red-500/15', text: 'text-red-300' }
       : amount_inr >= 1000
-      ? { bg: 'bg-amber-100', text: 'text-amber-700' }
-      : { bg: 'bg-yellow-100', text: 'text-yellow-700' }
+      ? { bg: 'bg-amber-500/15', text: 'text-amber-300' }
+      : { bg: 'bg-yellow-500/15', text: 'text-yellow-300' }
 
   return (
     <div className="relative inline-flex">
@@ -45,24 +45,24 @@ export default function PenaltyBadge({
       </span>
 
       {showTooltip && (
-        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50 w-52 bg-gray-900 text-white rounded-lg p-3 text-xs shadow-xl pointer-events-none">
+        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50 w-52 bg-panel2 border border-edge text-ink rounded-lg p-3 text-xs shadow-xl pointer-events-none">
           <p className="font-semibold mb-1.5">Penalty Breakdown</p>
-          <div className="space-y-1 text-gray-300">
+          <div className="space-y-1 text-inkMute">
             <div className="flex justify-between">
               <span>Days late</span>
-              <span className="text-white font-medium">{days_late}d</span>
+              <span className="text-ink font-medium">{days_late}d</span>
             </div>
             <div className="flex justify-between">
               <span>Estimated penalty</span>
-              <span className="text-white font-medium">{formatCurrency(amount_inr)}</span>
+              <span className="text-ink font-medium">{formatCurrency(amount_inr)}</span>
             </div>
             {is_first_offense && (
-              <div className="mt-1.5 pt-1.5 border-t border-gray-700 text-green-400 text-xs">
+              <div className="mt-1.5 pt-1.5 border-t border-edge text-accent-soft text-xs">
                 First offense — reduced penalty may apply
               </div>
             )}
           </div>
-          <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-gray-900" />
+          <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-panel2" />
         </div>
       )}
     </div>

@@ -4,6 +4,51 @@
 
 @layer base {
   body {
-    @apply bg-gray-50 text-gray-900 antialiased;
+    @apply bg-canvas text-ink antialiased;
+  }
+
+  /* Dark, slim scrollbars to match the obsidian canvas */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #2e2e33 transparent;
+  }
+  *::-webkit-scrollbar { width: 9px; height: 9px; }
+  *::-webkit-scrollbar-track { background: transparent; }
+  *::-webkit-scrollbar-thumb {
+    background: #2e2e33;
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  *::-webkit-scrollbar-thumb:hover { background: #3f3f46; background-clip: content-box; }
+
+  ::selection { background: rgba(16, 185, 129, 0.3); color: #fff; }
+}
+
+@layer components {
+  /* Reusable obsidian surfaces — keeps every panel visually consistent. */
+  .os-panel {
+    @apply bg-panel border border-edge rounded-2xl;
+  }
+  .os-card {
+    @apply bg-panel border border-edge rounded-xl;
+  }
+  .os-card-hover {
+    @apply transition-colors hover:bg-panel2 hover:border-edge;
+  }
+  .os-chip {
+    @apply bg-white/5 text-inkMute border border-edge rounded-full;
+  }
+  /* Emerald primary button */
+  .os-btn-accent {
+    @apply bg-accent text-canvas font-semibold rounded-lg transition-colors hover:bg-accent-soft disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  /* Ghost / secondary button */
+  .os-btn-ghost {
+    @apply text-inkMute border border-edge rounded-lg transition-colors hover:text-ink hover:bg-white/5;
+  }
+  /* Inputs */
+  .os-input {
+    @apply bg-panel2 border border-edge rounded-lg text-ink placeholder:text-inkFaint focus:outline-none focus:border-accent/60 focus:ring-2 focus:ring-accent/20 transition;
   }
 }

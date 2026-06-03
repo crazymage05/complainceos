@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import type { User } from 'firebase/auth'
+import clsx from 'clsx'
 import { signOutUser } from '../services/firebase'
 import {
   getObligations,
@@ -9,46 +10,99 @@ import {
   pingHealth,
   confirmObligation,
   dismissObligation,
+  getExposure,
+  getDecayTrend,
+  getHealthScore,
+  getExposureForecast,
+  getBenchmark,
+  subscribeToEvents,
+  type ChangeStreamEvent,
   type ObligationInstance,
   type FilingHistory as FilingHistoryType,
   type DraftDocument,
   type RippleReport,
+  type ExposureSummary,
+  type DecayTrends,
+  type HealthScore,
+  type ExposureForecast as ExposureForecastType,
+  type BenchmarkResponse,
 } from '../services/api'
-import DecayScoreCard from './DecayScoreCard'
-import RippleAlertCard from './RippleAlertCard'
+import HealthScoreRing from './HealthScoreRing'
+import ExposureForecastCard from './ExposureForecastCard'
+import BenchmarkCard from './BenchmarkCard'
 import AutoDraftQueue from './AutoDraftQueue'
 import FilingHistoryComp from './FilingHistory'
 import AIAdvisorTab from './AIAdvisorTab'
-import clsx from 'clsx'
+import OverviewTab from './tabs/OverviewTab'
+import ObligationsTab from './tabs/ObligationsTab'
+import RippleTab from './tabs/RippleTab'
+import ComplianceOfficerTab from './tabs/ComplianceOfficerTab'
+import CalendarTab from './tabs/CalendarTab'
+import CascadeTab from './tabs/CascadeTab'
+import DecisionsTab from './tabs/DecisionsTab'
+import RegulationSearch from './RegulationSearch'
+import EditProfileModal from './EditProfileModal'
+import ExplainRegulationModal from './ExplainRegulationModal'
+import ProfilePage from './ProfilePage'
+import { pushToast } from './Toaster'
 
 interface DashboardProps {
   user: User
 }
 
-type Tab = 'overview' | 'obligations' | 'ripple' | 'documents' | 'history' | 'advisor'
+type Tab = 'overview' | 'officer' | 'obligations' | 'calendar' | 'ripple' | 'cascade' | 'documents' | 'history' | 'advisor' | 'audit' | 'profile'
+
+function NavIcon({ id, className }: { id: Tab; className?: string }) {
+  const cls = className ?? 'w-[18px] h-[18px]'
+  const common = { fill: 'none' as const, viewBox: '0 0 24 24', stroke: 'currentColor', strokeWidth: 1.8 }
+  switch (id) {
+    case 'overview':
+      return <svg className={cls} {...common}><path strokeLinecap="round" strokeLinejoin="round" d="M4 5h6v6H4zM14 5h6v4h-6zM14 13h6v6h-6zM4 15h6v4H4z" /></svg>
+    case 'officer':
+      return <svg className={cls} {...common}><path strokeLinecap="round" strokeLinejoin="round" d="M12 2l7 3v6c0 4.4-3 8.5-7 9.9C8 19.5 5 15.4 5 11V5l7-3z" /></svg>
+    case 'obligations':
+      return <svg className={cls} {...common}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" /></svg>
+    case 'calendar':
+      return <svg className={cls} {...common}><path strokeLinecap="round" strokeLinejoin="round" d="M8 7V3m8 4V3M4 11h16M5 5h14a1 1 0 011 1v13a1 1 0 01-1 1H5a1 1 0 01-1-1V6a1 1 0 011-1z" /></svg>
+    case 'ripple':
+      return <svg className={cls} {...common}><path strokeLinecap="round" strokeLinejoin="round" d="M12 12a3 3 0 100-6 3 3 0 000 6zM5 19c0-3 3-5 7-5s7 2 7 5M3.5 12a8.5 8.5 0 0117 0" /></svg>
+    case 'cascade':
+      return <svg className={cls} {...common}><path strokeLinecap="round" strokeLinejoin="round" d="M4 6h6M14 6h6M9 12h6M4 18h6M14 18h6M7 6v6m10-6v6M12 12v6" /></svg>
+    case 'documents':
+      return <svg className={cls} {...common}><path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 4H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+    case 'history':
+      return <svg className={cls} {...common}><path strokeLinecap="round" strokeLinejoin="round" d="M3 12a9 9 0 109-9 9 9 0 00-7 3.3M3 4v4h4M12 7v5l3 2" /></svg>
+    case 'advisor':
+      return <svg className={cls} {...common}><path strokeLinecap="round" strokeLinejoin="round" d="M12 3l1.9 4.3L18 9l-4.1 1.7L12 15l-1.9-4.3L6 9l4.1-1.7L12 3zM18 14l.9 2.1L21 17l-2.1.9L18 20l-.9-2.1L15 17l2.1-.9L18 14z" /></svg>
+    case 'audit':
+      return <svg className={cls} {...common}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2M9 12h.01M9 16h.01M13 12h3M13 16h3" /></svg>
+    default:
+      return null
+  }
+}
 
 function SkeletonCard() {
   return (
-    <div className="bg-white rounded-xl border border-gray-100 p-5 animate-pulse shadow-sm">
-      <div className="h-4 bg-gray-200 rounded w-1/2 mb-3" />
-      <div className="h-8 bg-gray-200 rounded w-1/3 mb-2" />
-      <div className="h-3 bg-gray-100 rounded w-2/3" />
+    <div className="os-card p-5 animate-pulse">
+      <div className="h-3 bg-white/10 rounded w-1/2 mb-3" />
+      <div className="h-8 bg-white/10 rounded w-1/3 mb-2" />
+      <div className="h-2.5 bg-white/5 rounded w-2/3" />
     </div>
   )
 }
 
 function SummaryCard({
-  label, value, sub, color,
-}: { label: string; value: string | number; sub?: string; color: string }) {
+  label, value, sub, color, accentBar,
+}: { label: string; value: string | number; sub?: string; color: string; accentBar?: string }) {
   return (
-    <div className="bg-white rounded-xl border border-gray-100 p-5 shadow-sm hover:shadow-md transition-shadow">
-      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">{label}</p>
-      <p className={clsx('text-3xl font-black', color)}>{value}</p>
-      {sub && <p className="text-xs text-gray-400 mt-1">{sub}</p>}
+    <div className="os-card os-card-hover p-5 relative overflow-hidden">
+      {accentBar && <span className={clsx('absolute left-0 top-0 h-full w-1', accentBar)} />}
+      <p className="text-[11px] font-semibold text-inkMute uppercase tracking-wider mb-2">{label}</p>
+      <p className={clsx('text-3xl font-black tracking-tight', color)}>{value}</p>
+      {sub && <p className="text-xs text-inkFaint mt-1">{sub}</p>}
     </div>
   )
 }
-
 
 export default function Dashboard({ user }: DashboardProps) {
   const [activeTab, setActiveTab] = useState<Tab>('overview')
@@ -59,25 +113,53 @@ export default function Dashboard({ user }: DashboardProps) {
   const [rippleLoading, setRippleLoading] = useState(false)
   const [loading, setLoading] = useState(true)
   const [generatingDraft, setGeneratingDraft] = useState<string | null>(null)
+  const [exposure, setExposure] = useState<ExposureSummary | null>(null)
+  const [trends, setTrends] = useState<DecayTrends>({})
+  const [editOpen, setEditOpen] = useState(false)
+  const [healthScore, setHealthScore] = useState<HealthScore | null>(null)
+  const [forecast, setForecast] = useState<ExposureForecastType | null>(null)
+  const [benchmark, setBenchmark] = useState<BenchmarkResponse | null>(null)
+  const [explainQuestion, setExplainQuestion] = useState<string | null>(null)
+  const [mobileNavOpen, setMobileNavOpen] = useState(false)
+  const [profileRefresh, setProfileRefresh] = useState(0)
+
+  // Switch tab AND reset scroll, so each sidebar page opens at its own top
+  // rather than leaving you scrolled into the previous page.
+  function goToTab(tab: Tab) {
+    setActiveTab(tab)
+    setMobileNavOpen(false)
+    window.scrollTo({ top: 0, behavior: 'auto' })
+  }
+
+  function explainObligation(name: string) {
+    setExplainQuestion(`What is "${name}" — when is it due and what does it require?`)
+  }
 
   const businessId = localStorage.getItem('business_id') ?? ''
   const businessName = localStorage.getItem('business_name') ?? 'Your Business'
 
   useEffect(() => {
-    // Wake Railway before the first real API call — prevents cold-start delay during demo
     pingHealth()
 
     async function loadData() {
       setLoading(true)
       try {
-        const [obs, hist] = await Promise.all([
+        const [obs, hist, exp, tr, hs, fc, bm] = await Promise.all([
           getObligations(businessId),
           getFilingHistory(businessId),
+          getExposure(businessId).catch(() => null),
+          getDecayTrend(businessId).catch(() => ({})),
+          getHealthScore(businessId).catch(() => null),
+          getExposureForecast(businessId).catch(() => null),
+          getBenchmark(businessId).catch(() => null),
         ])
         setObligations(obs)
         setHistory(hist)
-      } catch {
-        // In demo mode, use empty arrays — API may not be running
+        setExposure(exp)
+        setTrends(tr)
+        setHealthScore(hs)
+        setForecast(fc)
+        setBenchmark(bm)
       } finally {
         setLoading(false)
       }
@@ -86,18 +168,56 @@ export default function Dashboard({ user }: DashboardProps) {
     else setLoading(false)
   }, [businessId])
 
+  // Live MongoDB Change Streams → SSE → toasts
+  useEffect(() => {
+    if (!businessId) return
+    const unsubscribe = subscribeToEvents(businessId, async (event: ChangeStreamEvent) => {
+      if (event.kind === 'subscribed') return  // handshake — ignore
+
+      if (event.collection === 'regulatory_changes' && event.operation === 'insert') {
+        pushToast(
+          `New ripple: "${event.title || 'regulation change'}" — ${event.direct_count ?? 0} direct, ${event.indirect_count ?? 0} indirect`,
+          'info',
+        )
+        try {
+          const [obs, exp] = await Promise.all([
+            getObligations(businessId),
+            getExposure(businessId).catch(() => null),
+          ])
+          setObligations(obs)
+          if (exp) setExposure(exp)
+        } catch { /* ignore */ }
+      } else if (event.collection === 'obligation_instances' && event.operation === 'update') {
+        const fields = event.changed_fields ?? []
+        if (fields.includes('status') && event.urgency === 'red') {
+          pushToast(`Obligation went RED: ${event.name}`, 'error')
+        }
+      } else if (event.collection === 'agent_decisions' && event.operation === 'insert') {
+        const action = (event.action || '').replace(/_/g, ' ')
+        if (action && action !== 'get obligations' && action !== 'get filing history') {
+          pushToast(`Agent action: ${action}`, 'info')
+        }
+      }
+    })
+    return unsubscribe
+  }, [businessId])
+
+  function formatINR(n: number): string {
+    if (n >= 10_000_000) return `${(n / 10_000_000).toFixed(2)}Cr`
+    if (n >= 100_000) return `${(n / 100_000).toFixed(2)}L`
+    if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
+    return `${n}`
+  }
+
   async function handleDraftClick(instanceId: string) {
     setGeneratingDraft(instanceId)
     try {
       const draft = await generateDraft(instanceId)
       setDrafts((prev) => {
-        const exists = prev.find((d) => d.instance_id === instanceId)
-        if (exists) return prev
+        if (prev.find((d) => d.instance_id === instanceId)) return prev
         return [draft, ...prev]
       })
       setActiveTab('documents')
-    } catch {
-      // handle silently for now
     } finally {
       setGeneratingDraft(null)
     }
@@ -108,23 +228,15 @@ export default function Dashboard({ user }: DashboardProps) {
   }
 
   async function handleConfirmObligation(instanceId: string) {
-    try {
-      await confirmObligation(instanceId)
-      setObligations((prev) =>
-        prev.map((o) => o.instance_id === instanceId ? { ...o, status: 'pending' as const } : o)
-      )
-    } catch {
-      // silently fail — UI stays as proposed
-    }
+    await confirmObligation(instanceId)
+    setObligations((prev) =>
+      prev.map((o) => o.instance_id === instanceId ? { ...o, status: 'pending' as const } : o)
+    )
   }
 
   async function handleDismissObligation(instanceId: string) {
-    try {
-      await dismissObligation(instanceId)
-      setObligations((prev) => prev.filter((o) => o.instance_id !== instanceId))
-    } catch {
-      // silently fail
-    }
+    await dismissObligation(instanceId)
+    setObligations((prev) => prev.filter((o) => o.instance_id !== instanceId))
   }
 
   async function handleRippleCheck(description: string, effectiveDate: string) {
@@ -139,19 +251,15 @@ export default function Dashboard({ user }: DashboardProps) {
       })
       setRippleAlerts((prev) => [report, ...prev])
       setActiveTab('ripple')
-    } catch {
-      // silently fail — user stays on current tab
     } finally {
       setRippleLoading(false)
     }
   }
 
-  // Derived stats
   const highSeverity = obligations.filter((o) => o.decay_score < 20).length
   const dueThisWeek = obligations.filter((o) => {
     const d = new Date(o.deadline)
-    const now = new Date()
-    const diff = (d.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)
+    const diff = (d.getTime() - Date.now()) / (1000 * 60 * 60 * 24)
     return diff >= 0 && diff <= 7
   }).length
   const total = history.length
@@ -160,530 +268,333 @@ export default function Dashboard({ user }: DashboardProps) {
 
   const tabs: { id: Tab; label: string; count?: number }[] = [
     { id: 'overview', label: 'Overview' },
+    { id: 'officer', label: 'Compliance Officer' },
     { id: 'obligations', label: 'Obligations', count: obligations.length },
+    { id: 'calendar', label: 'Calendar' },
     { id: 'ripple', label: 'Ripple Alerts', count: rippleAlerts.length || undefined },
+    { id: 'cascade', label: 'Cascade Demo' },
     { id: 'documents', label: 'Documents', count: drafts.length || undefined },
     { id: 'history', label: 'History' },
     { id: 'advisor', label: 'AI Advisor' },
+    { id: 'audit', label: 'Audit Log' },
   ]
 
-  return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Header */}
-      <header className="bg-white border-b border-gray-100 sticky top-0 z-30 shadow-sm">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-green-500 rounded-lg flex items-center justify-center">
-              <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-              </svg>
-            </div>
-            <span className="font-bold text-gray-900 text-lg">ComplianceOS</span>
-          </div>
+  const activeLabel = activeTab === 'profile'
+    ? 'Profile'
+    : tabs.find((t) => t.id === activeTab)?.label ?? 'Overview'
 
-          <div className="flex items-center gap-3">
-            <div className="hidden sm:flex items-center gap-2">
-              {user.photoURL && (
-                <img src={user.photoURL} alt="" className="w-7 h-7 rounded-full" />
-              )}
-              <span className="text-sm font-medium text-gray-700">{businessName}</span>
+  return (
+    <div className="min-h-screen bg-canvas text-ink">
+      {/* ── Sidebar ──────────────────────────────────────────────────────── */}
+      <aside
+        className={clsx(
+          'fixed inset-y-0 left-0 z-40 w-64 bg-panel border-r border-edge flex flex-col',
+          'transition-transform duration-200 lg:translate-x-0',
+          mobileNavOpen ? 'translate-x-0' : '-translate-x-full',
+        )}
+      >
+        {/* Brand */}
+        <div className="h-16 flex items-center gap-2.5 px-5 border-b border-edge">
+          <div className="w-8 h-8 rounded-lg bg-accent flex items-center justify-center shadow-glow">
+            <svg className="w-5 h-5 text-canvas" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.2}>
+              <path strokeLinecap="round" strokeLinejoin="round"
+                d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+            </svg>
+          </div>
+          <span className="font-bold text-ink text-[15px] tracking-tight">ComplianceOS</span>
+        </div>
+
+        {/* Nav */}
+        <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-0.5">
+          <p className="text-[10px] font-bold uppercase tracking-widest text-inkFaint px-3 mb-2">Workspace</p>
+          {tabs.map((tab) => {
+            const active = activeTab === tab.id
+            return (
+              <button
+                key={tab.id}
+                onClick={() => goToTab(tab.id)}
+                className={clsx(
+                  'w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors relative',
+                  active
+                    ? 'bg-accent/10 text-accent-soft'
+                    : 'text-inkMute hover:text-ink hover:bg-white/5',
+                )}
+              >
+                {active && <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full bg-accent" />}
+                <NavIcon id={tab.id} className={clsx('w-[18px] h-[18px]', active ? 'text-accent-soft' : 'text-inkFaint')} />
+                <span className="flex-1 text-left truncate">{tab.label}</span>
+                {tab.count !== undefined && tab.count > 0 && (
+                  <span className={clsx(
+                    'text-[11px] px-1.5 py-0.5 rounded-full font-semibold',
+                    active ? 'bg-accent/20 text-accent-soft' : 'bg-white/5 text-inkMute',
+                  )}>
+                    {tab.count}
+                  </span>
+                )}
+              </button>
+            )
+          })}
+        </nav>
+
+        {/* User card */}
+        <div className="border-t border-edge p-3">
+          <div className="flex items-center gap-2.5 px-2 py-2">
+            {user.photoURL
+              ? <img src={user.photoURL} alt="" className="w-8 h-8 rounded-full ring-1 ring-edge" />
+              : <div className="w-8 h-8 rounded-full bg-panel2 flex items-center justify-center text-xs font-bold text-inkMute">{businessName.charAt(0)}</div>}
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold text-ink truncate">{businessName}</p>
+              <p className="text-[11px] text-inkFaint truncate">{user.email}</p>
             </div>
+          </div>
+          <div className="grid grid-cols-2 gap-2 mt-2">
             <button
-              onClick={() => {
-                signOutUser()
-                localStorage.clear()
-                window.location.href = '/login'
-              }}
-              className="text-xs font-medium px-3 py-1.5 text-gray-600 hover:text-gray-900 border border-gray-200 rounded-lg hover:bg-gray-50 transition-all"
+              onClick={() => goToTab('profile')}
+              className={clsx(
+                'text-xs px-2 py-1.5 flex items-center justify-center gap-1.5 rounded-lg border transition-colors',
+                activeTab === 'profile'
+                  ? 'bg-accent/10 text-accent-soft border-accent/40'
+                  : 'os-btn-ghost',
+              )}
             >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+              </svg>
+              Profile
+            </button>
+            <button
+              onClick={() => { signOutUser(); localStorage.clear(); window.location.href = '/login' }}
+              className="os-btn-ghost text-xs px-2 py-1.5 flex items-center justify-center gap-1.5"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+              </svg>
               Sign out
             </button>
           </div>
         </div>
-      </header>
+      </aside>
 
-      <main className="max-w-6xl mx-auto px-4 sm:px-6 py-6 space-y-6">
-        {/* Page title */}
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900">Compliance Dashboard</h2>
-          <p className="text-sm text-gray-500 mt-0.5">
-            {businessName} · Real-time compliance monitoring
-          </p>
-        </div>
+      {/* Mobile overlay */}
+      {mobileNavOpen && (
+        <div className="fixed inset-0 z-30 bg-black/60 lg:hidden" onClick={() => setMobileNavOpen(false)} />
+      )}
 
-        {/* Summary Cards */}
-        {loading ? (
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-            {[0, 1, 2, 3].map((i) => <SkeletonCard key={i} />)}
+      {/* ── Main column ──────────────────────────────────────────────────── */}
+      <div className="lg:pl-64">
+        {/* Top bar */}
+        <header className="sticky top-0 z-20 h-16 bg-canvas/80 backdrop-blur-md border-b border-edge flex items-center gap-3 px-4 sm:px-6">
+          <button
+            onClick={() => setMobileNavOpen(true)}
+            className="lg:hidden os-btn-ghost p-2"
+            aria-label="Open navigation"
+          >
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+            </svg>
+          </button>
+          <div className="min-w-0">
+            <h1 className="text-base font-bold text-ink leading-none truncate">{activeLabel}</h1>
+            <p className="text-[11px] text-inkFaint mt-1 truncate">{businessName} · real-time compliance monitoring</p>
           </div>
-        ) : (
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-            <SummaryCard
-              label="Total Obligations"
-              value={obligations.length || '—'}
-              sub="Active compliance items"
-              color="text-gray-900"
-            />
-            <SummaryCard
-              label="High Severity"
-              value={highSeverity}
-              sub="Score below 20"
-              color={highSeverity > 0 ? 'text-red-600' : 'text-green-600'}
-            />
-            <SummaryCard
-              label="Due This Week"
-              value={dueThisWeek}
-              sub="Within 7 days"
-              color={dueThisWeek > 0 ? 'text-amber-600' : 'text-green-600'}
-            />
-            <SummaryCard
-              label="On-Time Rate"
-              value={onTimeRate}
-              sub={`${onTime} of ${total} filings`}
-              color={
-                onTimeRate === '—' ? 'text-gray-400'
-                : parseInt(onTimeRate) >= 80 ? 'text-green-600'
-                : parseInt(onTimeRate) >= 60 ? 'text-amber-600'
-                : 'text-red-600'
-              }
-            />
+          <div className="ml-auto">
+            <RegulationSearch />
           </div>
-        )}
+        </header>
 
-        {/* Tab Navigation */}
-        <div className="flex items-center gap-1 bg-white rounded-xl border border-gray-100 p-1 shadow-sm overflow-x-auto">
-          {tabs.map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={clsx(
-                'flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-all whitespace-nowrap',
-                activeTab === tab.id
-                  ? 'bg-green-500 text-white shadow-sm'
-                  : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
-              )}
-            >
-              {tab.label}
-              {tab.count !== undefined && tab.count > 0 && (
-                <span className={clsx(
-                  'text-xs px-1.5 py-0.5 rounded-full font-semibold',
-                  activeTab === tab.id
-                    ? 'bg-white/20 text-white'
-                    : 'bg-gray-100 text-gray-600'
-                )}>
-                  {tab.count}
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
-
-        {/* Tab Content */}
-        <div className="min-h-64">
+        <main className="px-4 sm:px-6 py-6 space-y-6 max-w-[1400px]">
+          {/* Summary widgets live on the Overview page only — every other
+              sidebar item leads with its own content. */}
           {activeTab === 'overview' && (
-            <OverviewTab
-              obligations={obligations}
-              rippleAlerts={rippleAlerts}
-              loading={loading}
-              onDraftClick={handleDraftClick}
-              generatingDraft={generatingDraft}
-              onRippleCheck={handleRippleCheck}
-              rippleLoading={rippleLoading}
-            />
+          <div className="space-y-6">
+          {/* Health ring */}
+          {(healthScore || loading) && (
+            <HealthScoreRing data={healthScore} loading={loading && !healthScore} />
           )}
-          {activeTab === 'obligations' && (
-            <ObligationsTab
-              obligations={obligations}
-              loading={loading}
-              onDraftClick={handleDraftClick}
-              generatingDraft={generatingDraft}
-              onConfirm={handleConfirmObligation}
-              onDismiss={handleDismissObligation}
-            />
-          )}
-          {activeTab === 'ripple' && (
-            <RippleTab
-              alerts={rippleAlerts}
-              onCheck={handleRippleCheck}
-              loading={rippleLoading}
-            />
-          )}
-          {activeTab === 'documents' && (
-            <div>
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="font-semibold text-gray-800">Auto-Generated Draft Queue</h3>
-                <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded-full">
-                  {drafts.length} pending review
-                </span>
+
+          {/* Total ₹ exposure banner */}
+          {exposure && exposure.total_pending > 0 && (
+            <div className="rounded-2xl p-5 flex items-center justify-between flex-wrap gap-4 border border-red-500/30 bg-red-500/[0.06]">
+              <div>
+                <p className="text-[11px] font-bold uppercase tracking-wider text-red-400">Total Penalty Exposure</p>
+                <p className="text-4xl font-black text-red-300 mt-1 tracking-tight">
+                  ₹{formatINR(exposure.total_exposure_inr)}
+                </p>
+                <p className="text-xs text-inkMute mt-1">
+                  across {exposure.total_pending} pending obligations · what you'd owe if you missed every deadline
+                </p>
               </div>
-              <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
-                <AutoDraftQueue drafts={drafts} onApprove={handleApprove} />
+              <div className="flex items-center gap-2 text-xs">
+                {(['red', 'amber', 'green'] as const).map((band) => {
+                  const bucket = exposure.by_urgency[band]
+                  if (!bucket || bucket.count === 0) return null
+                  const labels: Record<typeof band, string> = { red: 'Urgent', amber: 'Warning', green: 'On Track' }
+                  const tones: Record<typeof band, string> = {
+                    red: 'bg-red-500/10 text-red-300 border-red-500/30',
+                    amber: 'bg-amber-500/10 text-amber-300 border-amber-500/30',
+                    green: 'bg-accent/10 text-accent-soft border-accent/30',
+                  }
+                  return (
+                    <div key={band} className={clsx('px-3 py-2 border rounded-xl text-center min-w-[80px]', tones[band])}>
+                      <p className="text-[10px] font-bold uppercase">{labels[band]}</p>
+                      <p className="text-lg font-black">{bucket.count}</p>
+                      <p className="text-[10px] opacity-80">₹{formatINR(bucket.max_penalty_total)}</p>
+                    </div>
+                  )
+                })}
               </div>
             </div>
           )}
-          {activeTab === 'history' && (
-            <FilingHistoryComp history={history} />
-          )}
-          {activeTab === 'advisor' && (
-            <AIAdvisorTab businessId={businessId} businessName={businessName} onGoToObligations={() => setActiveTab('obligations')} />
-          )}
-        </div>
-      </main>
 
-      {/* Generating draft overlay feedback */}
+          {/* Forecast + benchmark */}
+          {(forecast || loading) && (
+            <ExposureForecastCard data={forecast} loading={loading && !forecast} />
+          )}
+          {(benchmark || loading) && (
+            <BenchmarkCard data={benchmark} loading={loading && !benchmark} />
+          )}
+
+          {/* KPI summary cards */}
+          {loading ? (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+              {[0, 1, 2, 3].map((i) => <SkeletonCard key={i} />)}
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+              <SummaryCard label="Total Obligations" value={obligations.length || '—'}
+                sub="Active compliance items" color="text-ink" accentBar="bg-accent" />
+              <SummaryCard label="High Severity" value={highSeverity}
+                sub="Score below 20"
+                color={highSeverity > 0 ? 'text-red-400' : 'text-accent-soft'}
+                accentBar={highSeverity > 0 ? 'bg-red-500' : 'bg-accent'} />
+              <SummaryCard label="Due This Week" value={dueThisWeek}
+                sub="Within 7 days"
+                color={dueThisWeek > 0 ? 'text-amber-400' : 'text-accent-soft'}
+                accentBar={dueThisWeek > 0 ? 'bg-amber-500' : 'bg-accent'} />
+              <SummaryCard label="On-Time Rate" value={onTimeRate}
+                sub={`${onTime} of ${total} filings`}
+                color={
+                  onTimeRate === '—' ? 'text-inkFaint'
+                  : parseInt(onTimeRate) >= 80 ? 'text-accent-soft'
+                  : parseInt(onTimeRate) >= 60 ? 'text-amber-400'
+                  : 'text-red-400'
+                }
+                accentBar={
+                  onTimeRate === '—' ? 'bg-edge'
+                  : parseInt(onTimeRate) >= 80 ? 'bg-accent'
+                  : parseInt(onTimeRate) >= 60 ? 'bg-amber-500'
+                  : 'bg-red-500'
+                } />
+            </div>
+          )}
+          </div>
+          )}
+
+          {/* Active tab content */}
+          <div className="min-h-64">
+            {activeTab === 'overview' && (
+              <OverviewTab
+                obligations={obligations}
+                rippleAlerts={rippleAlerts}
+                loading={loading}
+                onDraftClick={handleDraftClick}
+                onRippleCheck={handleRippleCheck}
+                rippleLoading={rippleLoading}
+                trends={trends}
+                onExplainClick={explainObligation}
+              />
+            )}
+            {activeTab === 'officer' && (
+              <ComplianceOfficerTab businessId={businessId} businessName={businessName} />
+            )}
+            {activeTab === 'calendar' && (
+              <CalendarTab obligations={obligations} onDraftClick={handleDraftClick} />
+            )}
+            {activeTab === 'obligations' && (
+              <ObligationsTab
+                obligations={obligations}
+                loading={loading}
+                onDraftClick={handleDraftClick}
+                onConfirm={handleConfirmObligation}
+                onDismiss={handleDismissObligation}
+                trends={trends}
+                onExplainClick={explainObligation}
+              />
+            )}
+            {activeTab === 'ripple' && (
+              <RippleTab alerts={rippleAlerts} onCheck={handleRippleCheck} loading={rippleLoading} />
+            )}
+            {activeTab === 'cascade' && (
+              <CascadeTab />
+            )}
+            {activeTab === 'documents' && (
+              <div>
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="font-semibold text-ink">Auto-Generated Draft Queue</h3>
+                  <span className="text-xs text-inkMute os-chip px-2.5 py-1">
+                    {drafts.length} pending review
+                  </span>
+                </div>
+                <div className="os-panel p-6">
+                  <AutoDraftQueue drafts={drafts} onApprove={handleApprove} />
+                </div>
+              </div>
+            )}
+            {activeTab === 'history' && <FilingHistoryComp history={history} />}
+            {activeTab === 'advisor' && (
+              <AIAdvisorTab
+                businessId={businessId}
+                businessName={businessName}
+                onGoToObligations={() => setActiveTab('obligations')}
+              />
+            )}
+            {activeTab === 'audit' && (
+              <DecisionsTab businessId={businessId} />
+            )}
+            {activeTab === 'profile' && (
+              <ProfilePage
+                user={user}
+                businessId={businessId}
+                refreshSignal={profileRefresh}
+                onEdit={() => setEditOpen(true)}
+                onSignOut={() => { signOutUser(); localStorage.clear(); window.location.href = '/login' }}
+              />
+            )}
+          </div>
+        </main>
+      </div>
+
       {generatingDraft && (
-        <div className="fixed bottom-6 right-6 bg-gray-900 text-white px-4 py-3 rounded-xl shadow-lg flex items-center gap-2.5 text-sm z-50">
-          <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+        <div className="fixed bottom-6 right-6 os-card bg-panel2 text-ink px-4 py-3 shadow-glow flex items-center gap-2.5 text-sm z-50">
+          <div className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin" />
           Generating draft document…
         </div>
       )}
-    </div>
-  )
-}
 
-// ─── Sub-views ────────────────────────────────────────────────────────────────
-
-function OverviewTab({
-  obligations,
-  rippleAlerts,
-  loading,
-  onDraftClick,
-  generatingDraft: _generatingDraft,
-  onRippleCheck,
-  rippleLoading,
-}: {
-  obligations: ObligationInstance[]
-  rippleAlerts: RippleReport[]
-  loading: boolean
-  onDraftClick: (id: string) => void
-  generatingDraft: string | null
-  onRippleCheck: (description: string, effectiveDate: string) => void
-  rippleLoading: boolean
-}) {
-  const urgent = obligations.filter((o) => o.decay_score < 20).slice(0, 3)
-  const warning = obligations.filter((o) => o.decay_score >= 20 && o.decay_score <= 40).slice(0, 3)
-
-  return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-      {/* Left: urgent obligations */}
-      <div className="lg:col-span-2 space-y-4">
-        <h3 className="font-semibold text-gray-800">Urgent Attention Required</h3>
-        {loading ? (
-          <div className="space-y-3">
-            {[0, 1, 2].map((i) => (
-              <div key={i} className="bg-white rounded-xl border border-gray-100 p-5 animate-pulse h-24" />
-            ))}
-          </div>
-        ) : urgent.length === 0 && warning.length === 0 ? (
-          <div className="bg-white rounded-xl border border-gray-100 p-8 text-center shadow-sm">
-            <div className="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-3">
-              <svg className="w-6 h-6 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-              </svg>
-            </div>
-            <p className="font-semibold text-gray-700">All obligations on track</p>
-            <p className="text-xs text-gray-400 mt-1">No urgent items at this time</p>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {[...urgent, ...warning].map((o) => (
-              <DecayScoreCard
-                key={o.instance_id}
-                {...o}
-                onDraftClick={onDraftClick}
-              />
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Right: ripple check + recent alerts */}
-      <div className="space-y-4">
-        <h3 className="font-semibold text-gray-800">Check Regulation Change</h3>
-        <QuickRippleForm onCheck={onRippleCheck} loading={rippleLoading} compact />
-        {rippleAlerts.length > 0 && (
-          <>
-            <h3 className="font-semibold text-gray-800 pt-2">Recent Ripple Alerts</h3>
-            {rippleAlerts.slice(0, 2).map((r, i) => (
-              <RippleAlertCard key={i} {...r} />
-            ))}
-          </>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function ObligationsTab({
-  obligations,
-  loading,
-  onDraftClick,
-  generatingDraft: _generatingDraft,
-  onConfirm,
-  onDismiss,
-}: {
-  obligations: ObligationInstance[]
-  loading: boolean
-  onDraftClick: (id: string) => void
-  generatingDraft: string | null
-  onConfirm: (id: string) => void
-  onDismiss: (id: string) => void
-}) {
-  const [filter, setFilter] = useState<'all' | 'urgent' | 'warning' | 'on_track'>('all')
-  const [confirming, setConfirming] = useState<string | null>(null)
-
-  const proposed = obligations.filter((o) => o.status === 'proposed')
-  const active = obligations.filter((o) => o.status !== 'proposed')
-
-  const filtered = active.filter((o) => {
-    if (filter === 'urgent') return o.decay_score < 20
-    if (filter === 'warning') return o.decay_score >= 20 && o.decay_score <= 40
-    if (filter === 'on_track') return o.decay_score > 40
-    return true
-  })
-
-  async function handleConfirm(id: string) {
-    setConfirming(id)
-    await onConfirm(id)
-    setConfirming(null)
-  }
-
-  return (
-    <div className="space-y-4">
-      {/* Proposed obligations — AI-discovered, awaiting review */}
-      {proposed.length > 0 && (
-        <div className="bg-purple-50 border border-purple-200 rounded-xl p-4 space-y-3">
-          <div className="flex items-center gap-2">
-            <svg className="w-4 h-4 text-purple-600 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-            </svg>
-            <p className="text-sm font-semibold text-purple-800">
-              {proposed.length} obligation{proposed.length > 1 ? 's' : ''} discovered by AI Advisor — review before tracking
-            </p>
-          </div>
-          <div className="space-y-2">
-            {proposed.map((o) => (
-              <div key={o.instance_id} className="bg-white rounded-lg border border-purple-100 p-3 flex items-start gap-3">
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-semibold text-gray-900">{o.obligation_name}</p>
-                  <p className="text-xs text-gray-500 mt-0.5">
-                    <span className="capitalize">{o.framework}</span>
-                    {o.description && ` · ${o.description.slice(0, 80)}`}
-                  </p>
-                </div>
-                <div className="flex items-center gap-2 flex-shrink-0">
-                  <button
-                    onClick={() => onDismiss(o.instance_id)}
-                    className="px-2.5 py-1 text-xs font-medium text-gray-500 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
-                  >
-                    Dismiss
-                  </button>
-                  <button
-                    onClick={() => handleConfirm(o.instance_id)}
-                    disabled={confirming === o.instance_id}
-                    className="px-2.5 py-1 text-xs font-semibold text-white bg-purple-600 hover:bg-purple-700 disabled:bg-purple-300 rounded-lg transition-colors flex items-center gap-1"
-                  >
-                    {confirming === o.instance_id ? (
-                      <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                    ) : 'Confirm'}
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Filters — apply only to active (non-proposed) obligations */}
-      <div className="flex items-center gap-2 flex-wrap">
-        {[
-          { id: 'all', label: 'All', count: active.length },
-          { id: 'urgent', label: 'Urgent', count: active.filter((o) => o.decay_score < 20).length },
-          { id: 'warning', label: 'Warning', count: active.filter((o) => o.decay_score >= 20 && o.decay_score <= 40).length },
-          { id: 'on_track', label: 'On Track', count: active.filter((o) => o.decay_score > 40).length },
-        ].map((f) => (
-          <button
-            key={f.id}
-            onClick={() => setFilter(f.id as typeof filter)}
-            className={clsx(
-              'px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all',
-              filter === f.id
-                ? 'bg-gray-900 text-white border-gray-900'
-                : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'
-            )}
-          >
-            {f.label} ({f.count})
-          </button>
-        ))}
-      </div>
-
-      {loading ? (
-        <div className="space-y-3">
-          {[0, 1, 2, 3].map((i) => (
-            <div key={i} className="bg-white rounded-xl border border-gray-100 p-5 animate-pulse h-24" />
-          ))}
-        </div>
-      ) : filtered.length === 0 ? (
-        <div className="text-center py-12 text-gray-400">
-          <p className="text-sm font-medium">No obligations in this category</p>
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {filtered.map((o) => (
-            <DecayScoreCard
-              key={o.instance_id}
-              {...o}
-              onDraftClick={onDraftClick}
-            />
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ─── Quick Ripple Form ────────────────────────────────────────────────────────
-
-const QUICK_EXAMPLES = [
-  { label: 'GST rate change', text: 'GST rate revised for restaurants and food services under QRMP scheme' },
-  { label: 'EPF wage ceiling', text: 'EPF wage ceiling enhanced — EPFO circular increases monthly PF contribution base' },
-  { label: 'FSSAI deadline', text: 'FSSAI annual return deadline extended — FoSCoS portal update for food businesses' },
-  { label: 'TDS threshold', text: 'TDS threshold revised under Income Tax Act — new slab rates for FY 2026-27' },
-]
-
-function QuickRippleForm({
-  onCheck,
-  loading,
-  compact = false,
-}: {
-  onCheck: (description: string, effectiveDate: string) => void
-  loading: boolean
-  compact?: boolean
-}) {
-  const today = new Date().toISOString().split('T')[0]
-  const [description, setDescription] = useState('')
-  const [effectiveDate, setEffectiveDate] = useState(today)
-
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    if (!description.trim()) return
-    onCheck(description.trim(), effectiveDate)
-  }
-
-  function fillExample(text: string) {
-    setDescription(text)
-  }
-
-  return (
-    <form onSubmit={handleSubmit} className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 space-y-3">
-      {!compact && (
-        <div>
-          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Quick examples</p>
-          <div className="flex flex-wrap gap-1.5">
-            {QUICK_EXAMPLES.map((ex) => (
-              <button
-                key={ex.label}
-                type="button"
-                onClick={() => fillExample(ex.text)}
-                className="text-xs px-2.5 py-1 bg-purple-50 text-purple-700 border border-purple-100 rounded-full hover:bg-purple-100 transition-colors font-medium"
-              >
-                {ex.label}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {compact && (
-        <div className="flex flex-wrap gap-1.5 mb-1">
-          {QUICK_EXAMPLES.slice(0, 2).map((ex) => (
-            <button
-              key={ex.label}
-              type="button"
-              onClick={() => fillExample(ex.text)}
-              className="text-xs px-2 py-0.5 bg-purple-50 text-purple-700 border border-purple-100 rounded-full hover:bg-purple-100 transition-colors"
-            >
-              {ex.label}
-            </button>
-          ))}
-        </div>
-      )}
-
-      <textarea
-        value={description}
-        onChange={(e) => setDescription(e.target.value)}
-        placeholder="Describe the regulation change… e.g. GST rate revised for e-commerce operators"
-        rows={compact ? 2 : 3}
-        className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-400 focus:border-transparent placeholder-gray-400 resize-none"
+      <ExplainRegulationModal
+        open={!!explainQuestion}
+        onClose={() => setExplainQuestion(null)}
+        businessId={businessId}
+        initialQuestion={explainQuestion ?? undefined}
       />
 
-      <div className="flex items-center gap-2">
-        <input
-          type="date"
-          value={effectiveDate}
-          onChange={(e) => setEffectiveDate(e.target.value)}
-          className="border border-gray-200 rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-purple-400 focus:border-transparent"
-        />
-        <button
-          type="submit"
-          disabled={loading || !description.trim()}
-          className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 bg-purple-600 hover:bg-purple-700 disabled:bg-purple-300 text-white text-xs font-semibold rounded-lg transition-colors"
-        >
-          {loading ? (
-            <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-          ) : (
-            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-            </svg>
-          )}
-          {loading ? 'Analysing…' : 'Run Ripple Check'}
-        </button>
-      </div>
-    </form>
-  )
-}
-
-// ─── Ripple Tab ───────────────────────────────────────────────────────────────
-
-function RippleTab({
-  alerts,
-  onCheck,
-  loading,
-}: {
-  alerts: RippleReport[]
-  onCheck: (description: string, effectiveDate: string) => void
-  loading: boolean
-}) {
-  return (
-    <div className="space-y-5">
-      <div>
-        <h3 className="font-semibold text-gray-800 mb-1">Regulatory Ripple Detection</h3>
-        <p className="text-xs text-gray-500">
-          Describe a regulatory change — AI analyses which of your obligations are directly or indirectly impacted using semantic vector search.
-        </p>
-      </div>
-
-      <QuickRippleForm onCheck={onCheck} loading={loading} />
-
-      {alerts.length === 0 ? (
-        <div className="text-center py-10 text-gray-400">
-          <svg className="w-10 h-10 mx-auto mb-3 opacity-40" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-              d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-          </svg>
-          <p className="text-sm font-medium">No checks run yet</p>
-          <p className="text-xs mt-1">Run a ripple check above to see which obligations are affected</p>
-        </div>
-      ) : (
-        <div className="space-y-4">
-          <p className="text-xs text-gray-500 font-medium">{alerts.length} check{alerts.length > 1 ? 's' : ''} run this session</p>
-          {alerts.map((r, i) => (
-            <RippleAlertCard key={i} {...r} />
-          ))}
-        </div>
-      )}
+      <EditProfileModal
+        businessId={businessId}
+        open={editOpen}
+        onClose={() => setEditOpen(false)}
+        onSaved={() => {
+          setProfileRefresh((n) => n + 1)
+          if (businessId) {
+            Promise.all([
+              getObligations(businessId),
+              getExposure(businessId).catch(() => null),
+            ]).then(([obs, exp]) => {
+              setObligations(obs)
+              if (exp) setExposure(exp)
+            })
+          }
+        }}
+      />
     </div>
   )
 }

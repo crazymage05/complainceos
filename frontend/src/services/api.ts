@@ -1,11 +1,61 @@
 import axios from 'axios'
+import { auth } from './firebase'
 
-const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
+const RAW_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
+// Always talk to the versioned API. If the env var already ends in /api/v1
+// (e.g. when running behind a gateway), don't double-prefix.
+const BASE_URL = RAW_BASE.replace(/\/+$/, '').endsWith('/api/v1')
+  ? RAW_BASE.replace(/\/+$/, '')
+  : `${RAW_BASE.replace(/\/+$/, '')}/api/v1`
 
 const api = axios.create({
   baseURL: BASE_URL,
   headers: { 'Content-Type': 'application/json' },
 })
+
+// Attach the Firebase ID token to every request. Backend treats it as
+// optional unless REQUIRE_AUTH=true, but sending it always means the
+// hardening flip is a one-env-var change with zero frontend work.
+api.interceptors.request.use(async (cfg) => {
+  const user = auth.currentUser
+  if (user) {
+    try {
+      const token = await user.getIdToken()
+      cfg.headers.Authorization = `Bearer ${token}`
+    } catch {
+      // Token fetch can fail offline — proceed unauth and let the backend decide.
+    }
+  }
+  return cfg
+})
+
+// Centralise error messaging so toasts can subscribe.
+export type ApiNoticeKind = 'error' | 'info'
+type ErrListener = (msg: string, kind: ApiNoticeKind) => void
+const errListeners = new Set<ErrListener>()
+export function onApiError(fn: ErrListener): () => void {
+  errListeners.add(fn)
+  return () => errListeners.delete(fn)
+}
+api.interceptors.response.use(
+  (r) => r,
+  (err) => {
+    const status = err?.response?.status
+    const detail = err?.response?.data?.detail
+    const msg = typeof detail === 'string'
+      ? detail
+      : status ? `Request failed (${status})` : 'Network error — backend unreachable'
+    // Gemini limits/overloads (429 quota, 503 high-demand) are expected external
+    // conditions, not app errors — surface them as calm info notices, not red.
+    const isTransientLLM = status === 429 || status === 503
+      || /quota|rate.?limit|unavailable|overloaded|high demand/i.test(msg)
+    // Health pings stay silent so cold-start doesn't fire a toast.
+    if (!String(err?.config?.url ?? '').endsWith('/health')) {
+      errListeners.forEach((fn) => fn(msg, isTransientLLM ? 'info' : 'error'))
+    }
+    return Promise.reject(err)
+  },
+)
 
 // ─── TypeScript Interfaces ───────────────────────────────────────────────────
 
@@ -159,9 +209,9 @@ export function getScoreColor(score: number): 'red' | 'amber' | 'green' {
 }
 
 export function getScoreTailwind(score: number) {
-  if (score < 20) return { border: 'border-red-500', text: 'text-red-600', bg: 'bg-red-50', badge: 'bg-red-100 text-red-700' }
-  if (score <= 40) return { border: 'border-amber-500', text: 'text-amber-600', bg: 'bg-amber-50', badge: 'bg-amber-100 text-amber-700' }
-  return { border: 'border-green-500', text: 'text-green-600', bg: 'bg-green-50', badge: 'bg-green-100 text-green-700' }
+  if (score < 20) return { border: 'border-red-500', text: 'text-red-400', bg: 'bg-red-500/10', badge: 'bg-red-500/15 text-red-300' }
+  if (score <= 40) return { border: 'border-amber-500', text: 'text-amber-400', bg: 'bg-amber-500/10', badge: 'bg-amber-500/15 text-amber-300' }
+  return { border: 'border-accent', text: 'text-accent-soft', bg: 'bg-accent/10', badge: 'bg-accent/15 text-accent-soft' }
 }
 
 // ─── Response Transformers ───────────────────────────────────────────────────
@@ -260,6 +310,7 @@ export async function createBusiness(
     owner: data.owner_name,
     state: data.state,
     industry: data.industry,
+    business_type: data.business_type,
     employee_count: data.employee_count,
     annual_turnover_inr: data.annual_turnover_inr,
     registrations: data.registrations,
@@ -373,6 +424,19 @@ export async function approveDraft(
   return { status: res.data.status ?? 'filed' }
 }
 
+export async function downloadDraftPdf(instanceId: string, suggestedName?: string): Promise<void> {
+  const res = await api.get(`/draft/${instanceId}/pdf`, { responseType: 'blob' })
+  const blob = new Blob([res.data], { type: 'application/pdf' })
+  const url = window.URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = suggestedName || `compliance-draft-${instanceId}.pdf`
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  window.URL.revokeObjectURL(url)
+}
+
 export async function confirmObligations(
   businessId: string,
   keepIds: string[],
@@ -435,4 +499,460 @@ export async function getFilingHistory(
   const raw = res.data
   const history = Array.isArray(raw) ? raw : (raw.history ?? [])
   return history.map(transformFilingHistory)
+}
+
+// ─── Exposure + regulation search ────────────────────────────────────────────
+
+export interface ExposureSummary {
+  total_pending: number
+  total_exposure_inr: number
+  by_urgency: Record<string, { count: number; max_penalty_total: number; avg_decay: number }>
+}
+
+export interface DecayTrendPoint {
+  t: string  // ISO timestamp
+  score: number
+}
+
+export type DecayTrends = Record<string, DecayTrendPoint[]>  // keyed by instance_id
+
+export async function getDecayTrend(businessId: string): Promise<DecayTrends> {
+  const res = await api.get(`/decay-trend/${businessId}`)
+  return res.data?.trends ?? {}
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function getBusiness(businessId: string): Promise<any> {
+  const res = await api.get(`/business/${businessId}`)
+  return res.data
+}
+
+export async function updateBusiness(
+  businessId: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  updates: Record<string, any>,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+): Promise<any> {
+  const res = await api.patch(`/business/${businessId}`, updates)
+  return res.data
+}
+
+export async function getExposure(businessId: string): Promise<ExposureSummary> {
+  const res = await api.get(`/exposure/${businessId}`)
+  const raw = res.data
+  return {
+    total_pending: raw.total_pending ?? 0,
+    total_exposure_inr: raw.total_exposure_inr ?? 0,
+    by_urgency: raw.by_urgency ?? {},
+  }
+}
+
+export interface RegulationSearchResult {
+  _id: string
+  name: string
+  category: string
+  frequency?: string
+  deadline_rule?: string
+  max_penalty_inr?: number
+  source?: string
+  state_specific?: string | null
+  score?: number | null
+}
+
+export async function searchRegulations(
+  q: string,
+  category?: string,
+): Promise<{ results: RegulationSearchResult[]; method: string; count: number }> {
+  const res = await api.get('/search/regulations', {
+    params: { q, ...(category ? { category } : {}) },
+  })
+  return res.data
+}
+
+// ─── Audit Replay (Tier A — novel: re-run past decisions against today's data) ─
+
+export interface AgentDecisionRow {
+  _id: string
+  action: string
+  timestamp: string
+  payload: Record<string, unknown>
+  has_trace: boolean
+}
+
+export interface ActionCount {
+  action: string
+  count: number
+}
+
+export interface DecisionsByActionResponse {
+  business_id: string
+  decisions: AgentDecisionRow[]
+  action_counts: ActionCount[]
+}
+
+export interface DiffEntry {
+  path: string
+  kind: 'added' | 'removed' | 'changed'
+  original: unknown
+  current: unknown
+}
+
+export interface ReplayResponse {
+  decision_id: string
+  action: string
+  original_timestamp: string | null
+  original_payload: Record<string, unknown>
+  replay_at: string
+  replayable: boolean
+  reason?: string
+  current_output?: Record<string, unknown>
+  diff?: DiffEntry[]
+  original_record?: Record<string, unknown>
+}
+
+export async function getDecisionsByAction(businessId: string, action?: string): Promise<DecisionsByActionResponse> {
+  const res = await api.get(`/agent-decisions/${businessId}/by-action`, {
+    params: action ? { action } : {},
+  })
+  return res.data
+}
+
+export async function replayDecision(decisionId: string): Promise<ReplayResponse> {
+  const res = await api.post(`/agent-decisions/replay/${decisionId}`)
+  return res.data
+}
+
+// ─── Cross-business peer benchmark ──────────────────────────────────────────
+
+export interface BenchmarkCohort {
+  industry: string
+  size_band: 'micro' | 'small' | 'medium' | 'large'
+  size_band_range: { min: number; max: number }
+  peer_count: number
+  same_state_peer_count: number
+}
+
+export interface BenchmarkResponse {
+  business_id: string
+  cohort: BenchmarkCohort
+  on_time: {
+    your_rate: number | null
+    your_filings: number
+    cohort_avg_rate: number | null
+    percentile: number | null
+  }
+  decay_health: {
+    your_avg_decay: number | null
+    cohort_avg_decay: number | null
+    percentile: number | null
+  }
+}
+
+export async function getBenchmark(businessId: string): Promise<BenchmarkResponse> {
+  const res = await api.get(`/benchmark/${businessId}`)
+  return res.data
+}
+
+// ─── Penalty Exposure Forecast (Time Series projection 30/60/90 days) ───────
+
+export interface ForecastHorizon {
+  days: number
+  exposure_inr: number
+  delta_inr: number
+  newly_red_count: number
+  obligations_overdue_count: number
+}
+
+export interface ForecastContributor {
+  name: string
+  amount_inr: number
+  days_late_at_horizon: number
+  due_date: string
+}
+
+export interface ExposureForecast {
+  business_id: string
+  horizons_days: number[]
+  current_exposure_inr: number
+  by_horizon: ForecastHorizon[]
+  top_contributors: ForecastContributor[]
+  total_pending: number
+}
+
+export async function getExposureForecast(businessId: string): Promise<ExposureForecast> {
+  const res = await api.get(`/exposure-forecast/${businessId}`)
+  return res.data
+}
+
+// ─── Compliance Health Score (single 0-100 number) ──────────────────────────
+
+export interface HealthDimension {
+  score: number
+  weight: number
+  detail: string
+}
+
+export interface HealthScore {
+  business_id: string
+  health_score: number
+  band: 'excellent' | 'good' | 'fair' | 'poor' | 'critical'
+  dimensions: {
+    freshness: HealthDimension & { red: number; amber: number; green: number }
+    on_time_rate: HealthDimension & { rate: number | null }
+    ripple_exposure: HealthDimension & { recent: number; high: number }
+    overdue_penalty: HealthDimension
+  }
+  computed_at: string
+}
+
+export async function getHealthScore(businessId: string): Promise<HealthScore> {
+  const res = await api.get(`/health-score/${businessId}`)
+  return res.data
+}
+
+// ─── Multi-tenant ripple cascade (Tier S #4) ─────────────────────────────────
+
+export interface CascadeResult {
+  business_id: string
+  business_name: string
+  industry: string
+  state: string
+  direct_count: number
+  indirect_count: number
+  severity: 'high' | 'medium' | 'low'
+  detection_method: string
+  top_direct: string[]
+}
+
+export interface CascadeResponse {
+  title: string
+  businesses_evaluated: number
+  businesses_affected: number
+  elapsed_ms: number
+  hybrid: boolean
+  results: CascadeResult[]
+}
+
+export async function rippleCascade(
+  title: string,
+  description: string,
+  affectedCategories?: string[],
+  hybrid: boolean = true,
+): Promise<CascadeResponse> {
+  const res = await api.post('/admin/ripple-cascade', {
+    title,
+    description,
+    affected_categories: affectedCategories,
+  }, { params: { hybrid, limit_businesses: 20 } })
+  return res.data
+}
+
+// ─── Multimodal OCR upload (Tier S #3) ───────────────────────────────────────
+
+export interface UploadCircularResponse {
+  source: string
+  ocr_extracted_chars: number
+  ocr_preview: string
+  ocr_mime_type: string
+  ingestion: {
+    reg_id: string
+    name: string
+    category: string
+    businesses_affected: number
+    ripple_summary: Array<{
+      business_id: string
+      business_name: string
+      direct: number
+      indirect: number
+      severity: string
+    }>
+  }
+}
+
+export async function uploadCircular(
+  file: File,
+  source: string,
+): Promise<UploadCircularResponse> {
+  const form = new FormData()
+  form.append('file', file)
+  form.append('source', source)
+  const res = await api.post('/admin/upload-circular', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 120000,
+  })
+  return res.data
+}
+
+// ─── RAG explain-regulation (Tier S #5) ──────────────────────────────────────
+
+export interface RegulationCitation {
+  label: string  // "Reg-1"
+  regulation_id: string
+  name: string
+  category: string
+  found_by: string[]
+  rrf_score: number | null
+}
+
+export interface RagAnswer {
+  question: string
+  answer: string
+  citations: RegulationCitation[]
+  retrieval_method: string
+  retrieved_count: number
+}
+
+export async function explainRegulation(
+  question: string,
+  businessId?: string,
+): Promise<RagAnswer> {
+  const res = await api.post('/agent/explain-regulation', {
+    question,
+    business_id: businessId,
+  }, { timeout: 60000 })
+  return res.data
+}
+
+// ─── Real-time events (Tier S #1 — Change Streams via SSE) ───────────────────
+
+export interface ChangeStreamEvent {
+  at?: string
+  kind?: string
+  collection?: string
+  operation?: string
+  business_id?: string | null
+  title?: string
+  category?: string
+  severity?: string
+  direct_count?: number
+  indirect_count?: number
+  action?: string
+  preview?: string
+  name?: string
+  urgency?: string
+  decay_score?: number
+  changed_fields?: string[]
+}
+
+/**
+ * Subscribe to MongoDB Change Stream events for a business via SSE.
+ * Returns a cleanup function to close the connection.
+ */
+export function subscribeToEvents(
+  businessId: string | null,
+  onEvent: (event: ChangeStreamEvent) => void,
+): () => void {
+  const params = new URLSearchParams()
+  if (businessId) params.set('business_id', businessId)
+  const url = `${BASE_URL}/events/stream${params.toString() ? '?' + params : ''}`
+  const es = new EventSource(url)
+  es.onmessage = (msg) => {
+    try {
+      onEvent(JSON.parse(msg.data) as ChangeStreamEvent)
+    } catch {
+      // ignore malformed event
+    }
+  }
+  es.onerror = () => {
+    // EventSource auto-reconnects; nothing to do
+  }
+  return () => es.close()
+}
+
+// ─── Agent (multi-agent Compliance Officer) ───────────────────────────────────
+
+export interface AgentEventPart {
+  text?: string
+  tool?: string
+  args?: Record<string, unknown>
+  tool_result?: string
+  response?: Record<string, unknown>
+}
+
+export interface AgentEvent {
+  kind?: string
+  author?: string
+  at?: string
+  parts?: AgentEventPart[]
+  content?: string
+  answer?: string
+  step_count?: number
+  message?: string
+}
+
+/**
+ * Stream the agent's reasoning events via Server-Sent Events.
+ * The callback fires for each event; the returned promise resolves when
+ * the stream closes.
+ *
+ * We use fetch + ReadableStream rather than EventSource because EventSource
+ * only supports GET, and our endpoint is POST (carries the question body).
+ */
+export async function streamAgent(
+  question: string,
+  businessId: string | undefined,
+  onEvent: (event: AgentEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const url = `${BASE_URL}/agent/stream`
+  // Axios interceptors don't run on raw fetch(), so attach the token here.
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  const user = auth.currentUser
+  if (user) {
+    try {
+      const token = await user.getIdToken()
+      headers.Authorization = `Bearer ${token}`
+    } catch {
+      // proceed unauthenticated
+    }
+  }
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ question, business_id: businessId }),
+    signal,
+  })
+
+  if (!res.body) {
+    throw new Error('Agent stream returned no body')
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+
+    // SSE messages are separated by \n\n
+    const messages = buffer.split('\n\n')
+    buffer = messages.pop() ?? ''  // last chunk may be incomplete
+
+    for (const msg of messages) {
+      const dataLine = msg.split('\n').find((l) => l.startsWith('data:'))
+      if (!dataLine) continue
+      const payload = dataLine.slice(5).trim()
+      if (!payload) continue
+      try {
+        onEvent(JSON.parse(payload) as AgentEvent)
+      } catch {
+        // ignore malformed chunk
+      }
+    }
+  }
+}
+
+/**
+ * Blocking variant — returns the final answer and the full trace at once.
+ * Use this when streaming isn't worth the complexity.
+ */
+export async function askAgent(
+  question: string,
+  businessId?: string,
+): Promise<{ answer: string; trace: AgentEvent[]; step_count: number }> {
+  const res = await api.post('/agent/ask', { question, business_id: businessId })
+  return res.data
 }

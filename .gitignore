@@ -22,6 +22,11 @@ gcloud-key.json
 .idea/
 *.swp
 
+# Logs & test caches
+*.log
+.pytest_cache/
+audit_*.txt
+
 # OS
 .DS_Store
 Thumbs.db

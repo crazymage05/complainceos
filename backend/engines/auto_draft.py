@@ -6,6 +6,10 @@ from typing import Any, Dict
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from logging_config import get_logger
+
+log = get_logger(__name__)
+
 
 # Category-specific filing defaults — used when Gemini is unavailable
 _CATEGORY_DEFAULTS: Dict[str, Dict] = {
@@ -147,33 +151,43 @@ async def generate_draft(
     instance_id: str,
 ) -> Dict[str, Any]:
     """
-    Auto-Draft Filing Agent — Patent Claim 5.
-    Pre-populates filing documents from business data, then calls Gemini
-    for structured filing advice specific to this business and obligation.
+    Pre-populate a filing template from business data, then call Gemini for
+    obligation-specific advisor notes. Falls back to category defaults if the
+    LLM is unavailable.
     """
     try:
         business = await db.businesses.find_one({"_id": ObjectId(business_id)})
-    except Exception:
+    except Exception as exc:
+        log.warning("invalid business_id %r: %s", business_id, exc)
         business = None
 
-    template = await db.filing_templates.find_one({"regulation_id": regulation_id})
-    if not template:
-        template = await db.filing_templates.find_one({})
-
-    # regulation_id may be a plain string key ("reg_001") or an ObjectId hex —
-    # try ObjectId first, fall back to direct string match
+    # regulation_id is either an ObjectId hex or a plain string key (e.g. "reg_001")
     regulation = None
     try:
         regulation = await db.regulatory_corpus.find_one({"_id": ObjectId(regulation_id)})
     except Exception:
-        pass
+        regulation = None
     if not regulation:
         regulation = await db.regulatory_corpus.find_one({"_id": regulation_id})
 
-    if not business or not template:
-        return {"error": "Business or template not found"}
+    # Template lookup, in priority order:
+    #   1. Exact match on regulation_id
+    #   2. Any template tagged with the same category
+    # If neither hits, we synthesise a generic template named after the
+    # regulation itself — never fall back to "any template" (the previous bug
+    # made every draft show TDS Return Form 26Q regardless of what was filed).
+    template = await db.filing_templates.find_one({"regulation_id": regulation_id})
+    if not template and regulation:
+        cat = regulation.get("category")
+        if cat:
+            template = await db.filing_templates.find_one({"category": cat})
+    if not template:
+        template = _synthesise_template(regulation, regulation_id)
 
-    # TODO: PATENT-PENDING — field mapping rules omitted
+    if not business:
+        log.info("draft skipped: business not found")
+        return {"error": "Business not found"}
+
     populated_fields: Dict[str, Any] = {}
     for field in template.get("fields", []):
         fname = field["field_name"]
@@ -197,8 +211,47 @@ async def generate_draft(
     }
 
 
+_GENERIC_FIELDS = [
+    {"field_name": "legal_name", "maps_to": "businesses.name"},
+    {"field_name": "state", "maps_to": "businesses.state"},
+    {"field_name": "employee_count", "maps_to": "businesses.employee_count"},
+    {"field_name": "annual_turnover_inr", "maps_to": "businesses.annual_turnover_inr"},
+]
+
+
+def _synthesise_template(regulation: Dict | None, regulation_id: str) -> Dict[str, Any]:
+    """Build a sensible default template when no template doc matches.
+
+    The previous code fell back to ``find_one({})`` which returned whatever
+    random template Mongo handed back — usually TDS Return Form 26Q. That
+    made every draft visibly wrong. A synthesised template at least names
+    itself after the actual obligation.
+    """
+    reg_name = (regulation or {}).get("name", "") or regulation_id
+    category = (regulation or {}).get("category", "")
+    portal = ""
+    if category == "taxation":
+        portal = "https://www.gst.gov.in"
+    elif category == "labour":
+        portal = "https://www.epfindia.gov.in"
+    elif category == "food_safety":
+        portal = "https://foscos.fssai.gov.in"
+    elif category in ("companies_act", "corporate"):
+        portal = "https://www.mca.gov.in"
+    elif category == "income_tax":
+        portal = "https://www.incometax.gov.in"
+    return {
+        "regulation_id": regulation_id,
+        "template_name": reg_name,
+        "category": category,
+        "fields": list(_GENERIC_FIELDS),
+        "output_format": "pdf",
+        "authority_portal": portal,
+        "synthesised": True,
+    }
+
+
 def _resolve_field(business: Dict, maps_to: str) -> Any:
-    # TODO: PATENT-PENDING — resolution logic omitted
     simple_map = {
         "businesses.name": business.get("name", ""),
         "businesses.state": business.get("state", ""),
@@ -245,8 +298,9 @@ async def _get_advisor_notes(
             if raw.startswith("json"):
                 raw = raw[4:]
         return json.loads(raw.strip())
-    except Exception:
+    except Exception as exc:
         # Gemini unavailable (rate limit / quota) — serve category-specific defaults
+        log.warning("advisor notes fallback (%s): %s", regulation.get("category", "?"), exc)
         cat = regulation.get("category", "")
         defaults = _CATEGORY_DEFAULTS.get(cat, _DEFAULT_FALLBACK)
         return {

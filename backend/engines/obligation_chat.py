@@ -4,6 +4,10 @@ from typing import Any, Dict, List
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from logging_config import get_logger
+
+log = get_logger(__name__)
+
 
 _SYSTEM_PROMPT = (
     "You are an expert Indian MSME compliance advisor conducting an onboarding interview. "
@@ -12,11 +16,19 @@ _SYSTEM_PROMPT = (
     "state-specific rules, threshold crossings, home-based operations, fire NOCs, trade licences, "
     "POSH applicability, e-commerce TCS, import/export obligations, etc.\n\n"
     "Rules:\n"
-    "- Ask ONE focused follow-up question per turn\n"
-    "- When you discover a non-obvious obligation, include it in 'discovered'\n"
-    "- Be specific to Indian law and the business's state/industry\n"
-    "- Provide 2-3 short suggestion buttons to help the user respond quickly\n"
-    "- In 'new_facts', record any structured boolean/string facts learned THIS turn only (e.g. uses_delivery_platforms, has_contract_workers)\n\n"
+    "- Ask ONE focused follow-up question per turn.\n"
+    "- ALWAYS include at least 1-2 candidate obligations in 'discovered' that are commonly "
+    "  missed for THIS business's state + industry + size — even on the first turn. Examples:\n"
+    "    * Tamil Nadu retail with >10 employees: POSH Internal Complaints Committee constitution\n"
+    "    * Maharashtra food services with FSSAI: Maharashtra Pollution Control Board consent\n"
+    "    * Karnataka services with employees: Karnataka Labour Welfare Fund\n"
+    "    * Any e-commerce: GSTR-8 TCS Return\n"
+    "    * Any imports/exports: IEC renewal\n"
+    "  Mark these with `reason` explaining the trigger.\n"
+    "- Be specific to Indian law and the business's state/industry.\n"
+    "- Provide 2-3 short suggestion buttons to help the user respond quickly.\n"
+    "- In 'new_facts', record any structured boolean/string facts learned THIS turn only "
+    "  (e.g. uses_delivery_platforms, has_contract_workers).\n\n"
     "Respond ONLY with valid JSON — no markdown, no explanation:\n"
     '{"reply":"your message","discovered":[{"name":"obligation name","reason":"why it applies to this specific business","category":"taxation/labour/food_safety/shops_establishments/companies_act/fire_safety/other","urgency":"immediate/next_30_days/annual"}],"suggestions":["option 1","option 2","option 3"],"new_facts":{"key":value}}'
 )
@@ -79,8 +91,8 @@ async def chat_discover(
         result.setdefault("discovered", [])
         result.setdefault("suggestions", [])
         result.setdefault("new_facts", {})
-    except Exception as e:
-        print(f"Gemini error in chat_discover: {e}")
+    except Exception as exc:
+        log.warning("chat_discover fallback: %s", exc)
         result = {
             "reply": "Do you employ contract workers or gig workers alongside your full-time staff? Many businesses miss EPF/ESI obligations for this category.",
             "discovered": [],

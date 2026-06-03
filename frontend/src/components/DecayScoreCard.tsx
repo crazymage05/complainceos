@@ -1,5 +1,5 @@
 import clsx from 'clsx'
-import { getScoreTailwind } from '../services/api'
+import { getScoreTailwind, type DecayTrendPoint } from '../services/api'
 
 interface DecayScoreCardProps {
   instance_id: string
@@ -9,6 +9,32 @@ interface DecayScoreCardProps {
   predicted_penalty_inr: number
   status: string
   onDraftClick: (instanceId: string) => void
+  trend?: DecayTrendPoint[]
+  onExplainClick?: (obligationName: string) => void
+}
+
+function Sparkline({ points }: { points: DecayTrendPoint[] }) {
+  if (!points || points.length < 2) return null
+  const W = 90
+  const H = 24
+  const xs = points.map((_, i) => (i / (points.length - 1)) * W)
+  const ys = points.map((p) => H - (Math.max(0, Math.min(100, p.score)) / 100) * H)
+  const d = xs.map((x, i) => `${i === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${ys[i].toFixed(1)}`).join(' ')
+  const last = points[points.length - 1]?.score ?? 0
+  const stroke = last < 20 ? '#ef4444' : last <= 40 ? '#f59e0b' : '#22c55e'
+
+  return (
+    <svg
+      className="flex-shrink-0"
+      width={W}
+      height={H}
+      viewBox={`0 0 ${W} ${H}`}
+      aria-label="30-day decay trend"
+    >
+      <path d={d} fill="none" stroke={stroke} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx={xs[xs.length - 1]} cy={ys[ys.length - 1]} r="2" fill={stroke} />
+    </svg>
+  )
 }
 
 function CircularScore({ score }: { score: number }) {
@@ -25,7 +51,7 @@ function CircularScore({ score }: { score: number }) {
         <circle
           cx="36" cy="36" r={radius}
           fill="none"
-          stroke="#e5e7eb"
+          stroke="#27272A"
           strokeWidth="7"
         />
         <circle
@@ -76,6 +102,8 @@ export default function DecayScoreCard({
   predicted_penalty_inr,
   status,
   onDraftClick,
+  trend,
+  onExplainClick,
 }: DecayScoreCardProps) {
   const colors = getScoreTailwind(decay_score)
   const days = daysUntil(deadline)
@@ -85,17 +113,17 @@ export default function DecayScoreCard({
 
   const statusColor =
     status === 'overdue'
-      ? 'bg-red-100 text-red-700'
+      ? 'bg-red-500/15 text-red-300'
       : status === 'filed'
-      ? 'bg-green-100 text-green-700'
+      ? 'bg-accent/15 text-accent-soft'
       : status === 'in_progress'
-      ? 'bg-blue-100 text-blue-700'
-      : 'bg-gray-100 text-gray-600'
+      ? 'bg-blue-500/15 text-blue-300'
+      : 'bg-white/5 text-inkMute'
 
   return (
     <div
       className={clsx(
-        'bg-white rounded-xl border-l-4 shadow-sm hover:shadow-md transition-shadow p-5 flex gap-4 items-start',
+        'os-card border-l-4 hover:bg-panel2 transition-colors p-5 flex gap-4 items-start',
         colors.border
       )}
     >
@@ -105,13 +133,13 @@ export default function DecayScoreCard({
       {/* Content */}
       <div className="flex-1 min-w-0">
         <div className="flex items-start justify-between gap-2 mb-1">
-          <h3 className="font-semibold text-gray-900 text-sm leading-tight">{obligation_name}</h3>
+          <h3 className="font-semibold text-ink text-sm leading-tight">{obligation_name}</h3>
           <span className={clsx('text-xs font-bold px-2 py-0.5 rounded-full flex-shrink-0', colors.badge)}>
             {urgencyLabel}
           </span>
         </div>
 
-        <div className="flex items-center gap-3 text-xs text-gray-500 mb-2">
+        <div className="flex items-center gap-3 text-xs text-inkMute mb-2">
           <span className="flex items-center gap-1">
             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
@@ -120,16 +148,22 @@ export default function DecayScoreCard({
           </span>
           <span className={clsx(
             'font-medium',
-            days < 0 ? 'text-red-600' : days <= 7 ? 'text-amber-600' : 'text-gray-500'
+            days < 0 ? 'text-red-400' : days <= 7 ? 'text-amber-400' : 'text-inkMute'
           )}>
             {days < 0 ? `${Math.abs(days)}d overdue` : days === 0 ? 'Due today!' : `${days}d left`}
           </span>
+          {trend && trend.length >= 2 && (
+            <span className="ml-auto flex items-center gap-1.5 text-[10px] text-inkFaint">
+              <span>30d trend</span>
+              <Sparkline points={trend} />
+            </span>
+          )}
         </div>
 
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             {predicted_penalty_inr > 0 && (
-              <span className="text-xs font-medium text-red-600 flex items-center gap-1">
+              <span className="text-xs font-medium text-red-400 flex items-center gap-1">
                 <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                 </svg>
@@ -141,14 +175,29 @@ export default function DecayScoreCard({
             </span>
           </div>
 
-          {decay_score < 40 && status !== 'filed' && (
-            <button
-              onClick={() => onDraftClick(instance_id)}
-              className="text-xs font-semibold px-3 py-1.5 bg-green-500 hover:bg-green-600 text-white rounded-lg transition-colors flex-shrink-0"
-            >
-              Prepare Draft
-            </button>
-          )}
+          <div className="flex items-center gap-1.5 flex-shrink-0">
+            {onExplainClick && (
+              <button
+                onClick={() => onExplainClick(obligation_name)}
+                title="Ask the regulatory corpus (RAG)"
+                className="text-xs font-semibold px-2.5 py-1.5 bg-transparent hover:bg-indigo-500/10 text-indigo-300 border border-indigo-500/30 rounded-lg transition-colors flex items-center gap-1"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                    d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093M12 17h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                Explain
+              </button>
+            )}
+            {decay_score < 40 && status !== 'filed' && (
+              <button
+                onClick={() => onDraftClick(instance_id)}
+                className="os-btn-accent text-xs px-3 py-1.5"
+              >
+                Prepare Draft
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>

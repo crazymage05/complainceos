@@ -2,6 +2,10 @@ import asyncio
 import json
 from typing import Any, Dict
 
+from logging_config import get_logger
+
+log = get_logger(__name__)
+
 
 _PROMPT_TEMPLATE = (
     "You are an expert Indian tax and regulatory compliance analyst.\n"
@@ -61,8 +65,8 @@ async def interpret_circular(
         result.setdefault("urgency", "medium")
         result.setdefault("affected_categories", [])
         return result
-    except Exception as e:
-        print(f"Gemini error in interpret_circular: {e}")
+    except Exception as exc:
+        log.warning("interpret_circular fallback: %s", exc)
         return {
             "plain_summary": "Could not parse this circular automatically. Please consult your CA for interpretation.",
             "affected_business_types": [],
